@@ -1,0 +1,22 @@
+package com.codeguard.agent.config;
+
+/**
+ * 本地私有 LLM 配置示例。
+ *
+ * 使用方法：
+ * 1. 把这个文件复制成 CodeGuardLocalLlmConfig.java。
+ * 2. 填入自己的 PROVIDER、API_KEY、BASE_URL、MODEL。
+ * 3. 不要提交 CodeGuardLocalLlmConfig.java，它已经写入 .gitignore。
+ */
+public final class CodeGuardLocalLlmConfig {
+
+    public static final String PROVIDER = "deepseek";
+
+    public static final String API_KEY = "在这里填写你的 API Key";
+
+    public static final String BASE_URL = "https://api.deepseek.com";
+
+    public static final String MODEL = "deepseek-v4-flash";
+
+    private CodeGuardLocalLlmConfig() {}
+}

@@ -1,0 +1,60 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: codeguard-agent
+
+  datasource:
+    # 默认使用 H2 内存数据库；Docker 环境会通过环境变量切换到 PostgreSQL。
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:codeguard;MODE=PostgreSQL;DATABASE_TO_UPPER=false}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+
+  data:
+    redis:
+      # 本地没有 Redis 时缓存写入会被安全跳过；Docker 环境会连接 redis 服务。
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+
+  flyway:
+    enabled: true
+    # 如果已有旧演示数据，首次接入 Flyway 时不会因为 schema 非空直接失败。
+    baseline-on-migrate: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      # 演示环境保留 update，便于旧数据卷自动补字段；生产环境建议改成 validate。
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:update}
+    open-in-view: false
+    show-sql: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+codeguard:
+  review:
+    max-diff-chars: 200000
+    async-poll-interval-ms: 1500
+
+  llm:
+    provider: deepseek
+
+  security:
+    token-secret: ${CODEGUARD_TOKEN_SECRET:codeguard-demo-token-secret-change-before-production}
+    token-ttl-minutes: ${CODEGUARD_TOKEN_TTL_MINUTES:480}
+
+  github:
+    token: ${GITHUB_TOKEN:}

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+    </parent>
+
+    <groupId>com.codeguard</groupId>
+    <artifactId>codeguard-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+
+    <properties>
+        <java.version>21</java.version>
+        <!-- 统一按 UTF-8 读取源码，避免 Windows 上中文注释乱码。 -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- Spring Web：提供 Controller、JSON 接口和内置 Tomcat。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Security：提供登录保护、Bearer Token 认证和接口权限控制。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Actuator：提供健康检查、指标和运行状态端点，方便上线演示和运维接入。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Prometheus 指标导出：让 /actuator/prometheus 能被监控系统抓取。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Validation：让 @NotBlank、@Size 这类参数校验注解生效。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Test：提供 JUnit、MockMvc、SpringBootTest 等测试工具。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- LangChain4j Agentic：用于定义和创建 LLM Agent。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-agentic</artifactId>
+            <version>1.18.1-beta28</version>
+        </dependency>
+
+        <!-- LangChain4j OpenAI：用于调用 OpenAI 或兼容 OpenAI 协议的大模型接口。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>1.18.1</version>
+        </dependency>
+
+        <!-- Spring Data JPA：用 Repository 方式操作数据库。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Data Redis：用于缓存最近 Review 的摘要结果。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Flyway：用 SQL 迁移脚本管理数据库结构，比 ddl-auto 更适合企业项目。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
+        <!-- Flyway PostgreSQL 支持：Flyway 11 对数据库类型拆分了模块。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- H2：本地学习阶段使用的内存数据库，不需要额外安装 PostgreSQL。 -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- PostgreSQL：Docker 或正式部署时使用的数据库驱动。 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot Maven 插件：把普通 jar 打包成可以 java -jar 启动的应用。 -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

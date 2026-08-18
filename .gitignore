@@ -1,0 +1,28 @@
+# Java / Maven
+backend/target/
+*.class
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+*.local
+*.local.yml
+*.local.yaml
+*.log
+logs/
+.idea/
+.vscode/
+
+# Local-only documents and secrets
+README_PRIVATE.md
+README_LOCAL.md
+backend/src/main/java/com/codeguard/agent/config/CodeGuardLocalLlmConfig.java
+
+# OS files
+Thumbs.db
+.DS_Store

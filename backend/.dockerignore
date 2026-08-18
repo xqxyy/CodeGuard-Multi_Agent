@@ -1,0 +1,5 @@
+target/*
+!target/codeguard-agent-0.1.0-SNAPSHOT.jar
+.idea/
+.vscode/
+*.log
