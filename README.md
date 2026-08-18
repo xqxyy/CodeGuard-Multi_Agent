@@ -35,52 +35,6 @@ multi_agent_java/
 .\codeguard.bat start
 ```
 
-访问地址：
-
-- 前端工作台：http://localhost:3000
-- 后端健康检查：http://localhost:18080/api/health
-- Actuator 健康检查：http://localhost:18080/actuator/health
-
-演示账号：
-
-```text
-admin / codeguard123
-developer / developer123
-auditor / auditor123
-```
-
-停止服务：
-
-```powershell
-.\codeguard.bat stop
-```
-
-常用命令：
-
-```powershell
-.\codeguard.bat start          # 打包后端并启动 Docker 服务
-.\codeguard.bat start -Open    # 启动后打开前端页面
-.\codeguard.bat restart        # 重启服务
-.\codeguard.bat status         # 查看容器状态
-.\codeguard.bat logs           # 查看实时日志
-.\codeguard.bat test           # 后端测试 + 前端构建
-.\codeguard.bat stop           # 停止服务
-```
-
-## LLM 配置
-
-公开仓库不包含任何真实 API Key。默认情况下，如果没有配置 Key，LLM 审查会自动跳过，规则 Agent 仍可正常运行。
-
-本地使用真实模型时，可以通过环境变量配置：
-
-```powershell
-$env:CODEGUARD_LLM_PROVIDER="deepseek"
-$env:CODEGUARD_LLM_API_KEY="your-api-key"
-$env:CODEGUARD_LLM_BASE_URL="https://api.deepseek.com"
-$env:CODEGUARD_LLM_MODEL="deepseek-v4-flash"
-```
-
-也可以参考 `backend/src/main/java/com/codeguard/agent/config/CodeGuardLocalLlmConfig.java.example` 创建本地私有配置文件。该私有配置文件已加入 `.gitignore`，不会被提交到仓库。
 
 ## 本地开发
 
