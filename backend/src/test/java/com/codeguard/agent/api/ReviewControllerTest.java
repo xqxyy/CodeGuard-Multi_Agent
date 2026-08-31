@@ -9,19 +9,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.codeguard.agent.agent.LlmReviewAgent;
 import com.codeguard.agent.domain.AgentStatus;
 import com.codeguard.agent.domain.AgentTraceRecord;
 import com.codeguard.agent.domain.AgentType;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 /**
  * ReviewController 测试
@@ -37,6 +42,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class ReviewControllerTest {
 
   @Autowired private MockMvc mockMvc;
+  @Autowired private ObjectMapper objectMapper;
 
   /** 测试里 mock LLM，避免真实请求模型接口 */
   @MockBean private LlmReviewAgent llmReviewAgent;
@@ -75,6 +81,18 @@ class ReviewControllerTest {
   }
 
   /**
+   * 验证 OpenAPI 文档接口可用，Swagger UI 会基于这个 JSON 渲染页面。
+   */
+  @Test
+  void exposesOpenApiDocumentation() throws Exception {
+    mockMvc
+        .perform(get("/v3/api-docs"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.openapi").exists())
+        .andExpect(jsonPath("$.info.title").value("CodeGuard Agent API"));
+  }
+
+  /**
    * 验证样例 Review 接口可用，并能返回问题列表和 Trace
    */
   @Test
@@ -85,6 +103,55 @@ class ReviewControllerTest {
         .andExpect(jsonPath("$.id").exists())
         .andExpect(jsonPath("$.issues.length()", greaterThanOrEqualTo(1)))
         .andExpect(jsonPath("$.traces.length()", greaterThanOrEqualTo(1)));
+  }
+
+  /**
+   * 验证异步提交支持幂等 key，同一个 key 重复提交不会创建第二个 Review。
+   */
+  @Test
+  void reusesReviewWhenIdempotencyKeyIsRepeated() throws Exception {
+    String requestBody =
+        objectMapper.writeValueAsString(
+            Map.of(
+                "title",
+                "idempotent review",
+                "diffText",
+                """
+                diff --git a/src/main/java/Demo.java b/src/main/java/Demo.java
+                --- a/src/main/java/Demo.java
+                +++ b/src/main/java/Demo.java
+                @@ -1,3 +1,6 @@
+                 public class Demo {
+                +  public String value() {
+                +    return null;
+                +  }
+                 }
+                """));
+
+    MvcResult first =
+        mockMvc
+            .perform(
+                post("/api/reviews")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .header("Idempotency-Key", "review-controller-test-key")
+                    .content(requestBody))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.reviewId").exists())
+            .andExpect(jsonPath("$.replayed").value(false))
+            .andReturn();
+
+    JsonNode firstJson = objectMapper.readTree(first.getResponse().getContentAsString());
+    String reviewId = firstJson.get("reviewId").asText();
+
+    mockMvc
+        .perform(
+            post("/api/reviews")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "review-controller-test-key")
+                .content(requestBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.reviewId").value(reviewId))
+        .andExpect(jsonPath("$.replayed").value(true));
   }
 
   /**

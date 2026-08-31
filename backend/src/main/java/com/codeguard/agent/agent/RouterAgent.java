@@ -73,6 +73,9 @@ public class RouterAgent {
             return new RouterDecision(enabledAgents, runReasons, skipReasons);
         }
 
+        enable(enabledAgents, runReasons, AgentType.CONTEXT_ENRICHMENT, "所有代码审查都需要仓库上下文工具增强");
+        enable(enabledAgents, runReasons, AgentType.KNOWLEDGE_BASE, "所有代码审查都需要企业知识库规范检索");
+
         if (hasJava || hasSql || hasConfig) {
             enable(enabledAgents, runReasons, AgentType.BUG_LOGIC, "检测到 Java、SQL 或配置变更");
         } else {
@@ -87,8 +90,10 @@ public class RouterAgent {
 
         if (hasJava || hasTest || hasBuild || hasConfig) {
             enable(enabledAgents, runReasons, AgentType.CODE_QUALITY, "检测到代码、测试、构建或配置变更");
+            enable(enabledAgents, runReasons, AgentType.STATIC_ANALYSIS, "检测到适合企业静态分析的代码、依赖或配置变更");
         } else {
             skipReasons.put(AgentType.CODE_QUALITY, "未检测到需要质量审查的变更");
+            skipReasons.put(AgentType.STATIC_ANALYSIS, "未检测到适合企业静态分析的变更");
         }
 
         if (parsedDiff.hasProductionJavaChange() || hasSql) {
@@ -111,9 +116,12 @@ public class RouterAgent {
     }
 
     private static void skipAll(Map<AgentType, String> skipReasons, String reason) {
+        skipReasons.put(AgentType.CONTEXT_ENRICHMENT, reason);
         skipReasons.put(AgentType.BUG_LOGIC, reason);
         skipReasons.put(AgentType.SECURITY, reason);
         skipReasons.put(AgentType.CODE_QUALITY, reason);
         skipReasons.put(AgentType.TEST_COVERAGE, reason);
+        skipReasons.put(AgentType.STATIC_ANALYSIS, reason);
+        skipReasons.put(AgentType.KNOWLEDGE_BASE, reason);
     }
 }

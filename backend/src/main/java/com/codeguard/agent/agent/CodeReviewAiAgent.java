@@ -29,7 +29,8 @@ public interface CodeReviewAiAgent {
             1. 阅读 diff 摘要。
             2. 阅读规则 Agent 已经发现的问题。
             3. 阅读关键变更行。
-            4. 只补充规则 Agent 可能漏掉的高价值问题。
+            4. 阅读仓库上下文工具和企业知识库命中的规范。
+            5. 只补充规则 Agent 可能漏掉的高价值问题。
 
             输出要求：
             - 必须只输出合法 JSON。
@@ -61,6 +62,7 @@ public interface CodeReviewAiAgent {
             - 事务边界、并发一致性、异常吞掉、空指针。
             - 新增生产代码但缺少测试覆盖。
             - 敏感信息、Token、密钥硬编码。
+            - 企业知识库命中的安全、供应链、异步任务和审计规范。
 
             如果没有额外高置信问题，返回：
             {"summary":"未发现额外高置信问题","findings":[]}
@@ -73,11 +75,19 @@ public interface CodeReviewAiAgent {
 
             关键变更行：
             {{diffSnippet}}
+
+            仓库上下文工具观察：
+            {{contextSummary}}
+
+            企业知识库检索片段：
+            {{knowledgeSnippets}}
             """
     )
     String review(
             @V("diffSummary") String diffSummary,
             @V("ruleFindingsJson") String ruleFindingsJson,
-            @V("diffSnippet") String diffSnippet
+            @V("diffSnippet") String diffSnippet,
+            @V("contextSummary") String contextSummary,
+            @V("knowledgeSnippets") String knowledgeSnippets
     );
 }

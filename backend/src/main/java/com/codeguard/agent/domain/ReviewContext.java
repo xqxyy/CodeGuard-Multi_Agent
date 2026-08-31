@@ -5,5 +5,10 @@ public record ReviewContext(
         String title,
         String rawDiff,
         ParsedDiff parsedDiff,
-        RouterDecision routerDecision
-) {}
+        RouterDecision routerDecision,
+        ReviewContextSnapshot contextSnapshot
+) {
+    public ReviewContext(String title, String rawDiff, ParsedDiff parsedDiff, RouterDecision routerDecision) {
+        this(title, rawDiff, parsedDiff, routerDecision, ReviewContextSnapshot.empty());
+    }
+}

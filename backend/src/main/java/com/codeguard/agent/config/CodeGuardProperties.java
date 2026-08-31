@@ -21,7 +21,7 @@ public record CodeGuardProperties(
      */
     public CodeGuardProperties {
         if (review == null) {
-            review = new Review(200_000);
+            review = new Review(200_000, 30, 20, 30, 5);
         }
 
         if (llm == null) {
@@ -36,10 +36,26 @@ public record CodeGuardProperties(
      * 审查执行配置
      *
      * maxDiffChars 用来限制 diff 最大长度，避免一次提交太大导致模型或服务压力过高
+     * submitRateLimitPerMinute 用来限制单用户提交频率
+     * maxActiveReviewsPerOrganization 用来限制单组织同时排队/运行的任务数
+     * runningTimeoutMinutes 用来恢复长时间卡在 RUNNING 的任务
+     * queuedDispatchBatchSize 用来控制兜底 worker 每轮派发任务数
      */
     public record Review(
-            int maxDiffChars
+            int maxDiffChars,
+            int submitRateLimitPerMinute,
+            int maxActiveReviewsPerOrganization,
+            int runningTimeoutMinutes,
+            int queuedDispatchBatchSize
     ) {
+
+        public Review(
+                int maxDiffChars,
+                int submitRateLimitPerMinute,
+                int maxActiveReviewsPerOrganization
+        ) {
+            this(maxDiffChars, submitRateLimitPerMinute, maxActiveReviewsPerOrganization, 30, 5);
+        }
 
         /**
          * 审查配置兜底逻辑
@@ -47,6 +63,18 @@ public record CodeGuardProperties(
         public Review {
             if (maxDiffChars <= 0) {
                 maxDiffChars = 200_000;
+            }
+            if (submitRateLimitPerMinute <= 0) {
+                submitRateLimitPerMinute = 30;
+            }
+            if (maxActiveReviewsPerOrganization <= 0) {
+                maxActiveReviewsPerOrganization = 20;
+            }
+            if (runningTimeoutMinutes <= 0) {
+                runningTimeoutMinutes = 30;
+            }
+            if (queuedDispatchBatchSize <= 0) {
+                queuedDispatchBatchSize = 5;
             }
         }
     }

@@ -17,6 +17,7 @@ import com.codeguard.agent.domain.AgentTraceRecord;
 import com.codeguard.agent.domain.AgentType;
 import com.codeguard.agent.domain.ParsedDiff;
 import com.codeguard.agent.domain.ReviewContext;
+import com.codeguard.agent.domain.ReviewContextSnapshot;
 import com.codeguard.agent.domain.ReviewFinding;
 import com.codeguard.agent.domain.RouterDecision;
 import com.codeguard.agent.persistence.AgentTraceEntity;
@@ -25,6 +26,7 @@ import com.codeguard.agent.persistence.ReviewEntity;
 import com.codeguard.agent.persistence.ReviewIssueEntity;
 import com.codeguard.agent.persistence.ReviewIssueRepository;
 import com.codeguard.agent.persistence.ReviewRepository;
+import com.codeguard.agent.security.CurrentUserService;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.Duration;
 import java.time.Instant;
@@ -39,6 +41,7 @@ import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,9 +57,17 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReviewWorkflowService {
 
     private static final List<AgentType> RULE_AGENT_ORDER =
-            List.of(AgentType.BUG_LOGIC, AgentType.SECURITY, AgentType.CODE_QUALITY, AgentType.TEST_COVERAGE);
+            List.of(
+                    AgentType.CONTEXT_ENRICHMENT,
+                    AgentType.BUG_LOGIC,
+                    AgentType.SECURITY,
+                    AgentType.CODE_QUALITY,
+                    AgentType.TEST_COVERAGE,
+                    AgentType.STATIC_ANALYSIS,
+                    AgentType.KNOWLEDGE_BASE
+            );
 
-    private static final int TOTAL_AGENT_STAGES = 7;
+    private static final int TOTAL_AGENT_STAGES = 10;
 
     private final GitDiffParser diffParser;
     private final RouterAgent routerAgent;
@@ -68,6 +79,12 @@ public class ReviewWorkflowService {
     private final ReviewMapper mapper;
     private final ReviewRuntimeCache runtimeCache;
     private final ProjectService projectService;
+    private final PolicyService policyService;
+    private final ReviewTaskStateService reviewTaskStateService;
+    private final ReviewTrafficGuard reviewTrafficGuard;
+    private final ReviewContextEnrichmentService contextEnrichmentService;
+    private final CurrentUserService currentUserService;
+    private final AuditLogService auditLogService;
     private final Executor reviewTaskExecutor;
     private final Map<AgentType, ReviewAgent> agents;
 
@@ -83,6 +100,12 @@ public class ReviewWorkflowService {
             ReviewMapper mapper,
             ReviewRuntimeCache runtimeCache,
             ProjectService projectService,
+            PolicyService policyService,
+            ReviewTaskStateService reviewTaskStateService,
+            ReviewTrafficGuard reviewTrafficGuard,
+            ReviewContextEnrichmentService contextEnrichmentService,
+            CurrentUserService currentUserService,
+            AuditLogService auditLogService,
             @Qualifier("reviewTaskExecutor") Executor reviewTaskExecutor
     ) {
         this.diffParser = diffParser;
@@ -95,6 +118,12 @@ public class ReviewWorkflowService {
         this.mapper = mapper;
         this.runtimeCache = runtimeCache;
         this.projectService = projectService;
+        this.policyService = policyService;
+        this.reviewTaskStateService = reviewTaskStateService;
+        this.reviewTrafficGuard = reviewTrafficGuard;
+        this.contextEnrichmentService = contextEnrichmentService;
+        this.currentUserService = currentUserService;
+        this.auditLogService = auditLogService;
         this.reviewTaskExecutor = reviewTaskExecutor;
         this.agents = agents.stream()
                 .collect(Collectors.toMap(
@@ -110,7 +139,31 @@ public class ReviewWorkflowService {
      */
     @Transactional
     public ReviewJobResponse submit(ReviewRequest request) {
+        return submit(request, null);
+    }
+
+    /**
+     * 创建异步 Review 任务，支持可选 Idempotency-Key。
+     */
+    @Transactional
+    public ReviewJobResponse submit(ReviewRequest request, String idempotencyKey) {
+        String organizationKey = currentUserService.organizationKey();
+        String normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey);
+
+        if (normalizedIdempotencyKey != null) {
+            var existing = reviewRepository.findFirstByOrganizationKeyAndIdempotencyKey(
+                    organizationKey,
+                    normalizedIdempotencyKey
+            );
+            if (existing.isPresent()) {
+                return toJobResponse(existing.get(), true);
+            }
+        }
+
+        reviewTrafficGuard.assertCanSubmit(organizationKey);
+        policyService.validateDiffSize(request.normalizedProjectKey(), request.diffText());
         ParsedDiff parsedDiff = diffParser.parse(request.diffText());
+        var effectiveOptions = policyService.resolveOptions(request.normalizedProjectKey(), request.options());
 
         projectService.ensureRepository(
                 request.normalizedProjectKey(),
@@ -119,15 +172,30 @@ public class ReviewWorkflowService {
                 request.sourceUrl()
         );
 
-        ReviewEntity review = ReviewEntity.createQueued(request, parsedDiff);
-        reviewRepository.save(review);
-
-        return new ReviewJobResponse(
-                review.getId(),
-                review.getStatus(),
-                "/api/reviews/" + review.getId() + "/progress",
-                "/api/reviews/" + review.getId()
+        ReviewEntity review = ReviewEntity.createQueued(
+                organizationKey,
+                request,
+                parsedDiff,
+                effectiveOptions,
+                normalizedIdempotencyKey
         );
+        try {
+            reviewRepository.saveAndFlush(review);
+        } catch (DataIntegrityViolationException exception) {
+            if (normalizedIdempotencyKey == null) {
+                throw exception;
+            }
+            return reviewRepository.findFirstByOrganizationKeyAndIdempotencyKey(
+                            organizationKey,
+                            normalizedIdempotencyKey
+                    )
+                    .map(existing -> toJobResponse(existing, true))
+                    .orElseThrow(() -> exception);
+        }
+        auditLogService.record("REVIEW_SUBMITTED", "REVIEW", review.getId().toString(),
+                "提交审查任务 " + review.getTitle());
+
+        return toJobResponse(review, false);
     }
 
     /**
@@ -143,16 +211,25 @@ public class ReviewWorkflowService {
      * 后台任务实际执行入口。
      */
     public void execute(UUID reviewId) {
-        ReviewEntity review = findReview(reviewId);
+        ReviewEntity review = reviewTaskStateService.claimQueued(reviewId).orElse(null);
+        if (review == null) {
+            return;
+        }
 
         try {
-            markRunning(review);
             issueRepository.deleteByReviewId(reviewId);
             traceRepository.deleteByReviewId(reviewId);
 
             ParsedDiff parsedDiff = diffParser.parse(review.getDiffText());
             RouterDecision routerDecision = routerAgent.route(parsedDiff, review.getDiffText());
-            ReviewContext context = new ReviewContext(review.getTitle(), review.getDiffText(), parsedDiff, routerDecision);
+            ReviewContextSnapshot contextSnapshot = contextEnrichmentService.enrich(parsedDiff, review.getDiffText());
+            ReviewContext context = new ReviewContext(
+                    review.getTitle(),
+                    review.getDiffText(),
+                    parsedDiff,
+                    routerDecision,
+                    contextSnapshot
+            );
 
             saveTrace(reviewId, routerTrace(routerDecision, parsedDiff));
 
@@ -188,16 +265,30 @@ public class ReviewWorkflowService {
                     summaryRun.summary().recommendation(),
                     summaryRun.summary().riskScore()
             );
+            auditLogService.recordSystem(
+                    completedReview.getOrganizationKey(),
+                    "REVIEW_COMPLETED",
+                    "REVIEW",
+                    completedReview.getId().toString(),
+                    "审查完成，风险分 " + completedReview.getRiskScore()
+            );
         } catch (Exception exception) {
             ReviewEntity failedReview = findReview(reviewId);
             failedReview.fail(exception.getMessage());
             reviewRepository.save(failedReview);
+            auditLogService.recordSystem(
+                    failedReview.getOrganizationKey(),
+                    "REVIEW_FAILED",
+                    "REVIEW",
+                    failedReview.getId().toString(),
+                    "审查失败：" + exception.getMessage()
+            );
         }
     }
 
     @Transactional(readOnly = true)
     public List<ReviewListItem> listRecent() {
-        return reviewRepository.findTop20ByOrderByCreatedAtDesc()
+        return reviewRepository.findTop20ByOrganizationKeyOrderByCreatedAtDesc(currentUserService.organizationKey())
                 .stream()
                 .map(mapper::toListItem)
                 .toList();
@@ -205,7 +296,11 @@ public class ReviewWorkflowService {
 
     @Transactional(readOnly = true)
     public List<ReviewListItem> listRecent(String projectKey) {
-        return reviewRepository.findTop20ByProjectKeyOrderByCreatedAtDesc(projectKey)
+        return reviewRepository
+                .findTop20ByOrganizationKeyAndProjectKeyOrderByCreatedAtDesc(
+                        currentUserService.organizationKey(),
+                        projectKey
+                )
                 .stream()
                 .map(mapper::toListItem)
                 .toList();
@@ -214,6 +309,7 @@ public class ReviewWorkflowService {
     @Transactional(readOnly = true)
     public ReviewResponse get(UUID reviewId) {
         ReviewEntity review = findReview(reviewId);
+        assertCurrentOrganization(review);
         List<ReviewIssueEntity> issues = issueRepository.findByReviewIdOrderByCreatedAtAsc(reviewId);
         List<AgentTraceEntity> traces = traceRepository.findByReviewIdOrderByStartedAtAsc(reviewId);
         ParsedDiff parsedDiff = diffParser.parse(review.getDiffText());
@@ -223,6 +319,7 @@ public class ReviewWorkflowService {
     @Transactional(readOnly = true)
     public ReviewProgressResponse progress(UUID reviewId) {
         ReviewEntity review = findReview(reviewId);
+        assertCurrentOrganization(review);
         List<AgentTraceEntity> traces = traceRepository.findByReviewIdOrderByStartedAtAsc(reviewId);
         List<AgentTraceDto> traceDtos = traces.stream().map(this::toProgressTrace).toList();
 
@@ -247,7 +344,9 @@ public class ReviewWorkflowService {
 
     @Transactional(readOnly = true)
     public String markdown(UUID reviewId) {
-        return findReview(reviewId).getMarkdown();
+        ReviewEntity review = findReview(reviewId);
+        assertCurrentOrganization(review);
+        return review.getMarkdown();
     }
 
     private List<ReviewFinding> runRuleAgents(
@@ -395,13 +494,9 @@ public class ReviewWorkflowService {
             case CODE_QUALITY -> review.isEnableCodeQuality();
             case TEST_COVERAGE -> review.isEnableTestCoverage();
             case LLM_REVIEW -> review.isEnableLlmReview();
+            case CONTEXT_ENRICHMENT, STATIC_ANALYSIS, KNOWLEDGE_BASE -> true;
             default -> true;
         };
-    }
-
-    private void markRunning(ReviewEntity review) {
-        review.start();
-        reviewRepository.save(review);
     }
 
     private void saveTrace(UUID reviewId, AgentTraceRecord trace) {
@@ -412,6 +507,34 @@ public class ReviewWorkflowService {
     private ReviewEntity findReview(UUID reviewId) {
         return reviewRepository.findById(reviewId)
                 .orElseThrow(() -> new EntityNotFoundException("Review not found: " + reviewId));
+    }
+
+    private ReviewJobResponse toJobResponse(ReviewEntity review, boolean replayed) {
+        return new ReviewJobResponse(
+                review.getId(),
+                review.getStatus(),
+                "/api/reviews/" + review.getId() + "/progress",
+                "/api/reviews/" + review.getId(),
+                replayed
+        );
+    }
+
+    private String normalizeIdempotencyKey(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        String stripped = value.strip();
+        if (stripped.length() > 120) {
+            throw new IllegalArgumentException("Idempotency-Key must be at most 120 characters");
+        }
+        return stripped;
+    }
+
+    private void assertCurrentOrganization(ReviewEntity review) {
+        if (!review.getOrganizationKey().equals(currentUserService.organizationKey())) {
+            throw new EntityNotFoundException("Review not found: " + review.getId());
+        }
     }
 
     private AgentTraceDto toProgressTrace(AgentTraceEntity trace) {

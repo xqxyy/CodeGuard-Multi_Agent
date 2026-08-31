@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -61,9 +62,14 @@ public class ReviewController {
      * 企业默认入口：异步提交 Review。
      */
     @PostMapping("/reviews")
-    public ReviewJobResponse submitReview(@Valid @RequestBody ReviewRequest request) {
-        ReviewJobResponse job = reviewWorkflowService.submit(request);
-        reviewAsyncExecutor.execute(job.reviewId());
+    public ReviewJobResponse submitReview(
+            @Valid @RequestBody ReviewRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
+        ReviewJobResponse job = reviewWorkflowService.submit(request, idempotencyKey);
+        if (!job.replayed()) {
+            reviewAsyncExecutor.execute(job.reviewId());
+        }
         return job;
     }
 
@@ -109,7 +115,10 @@ public class ReviewController {
     }
 
     @PostMapping("/samples/{sampleId}/reviews")
-    public ReviewJobResponse submitSampleReview(@PathVariable String sampleId) {
+    public ReviewJobResponse submitSampleReview(
+            @PathVariable String sampleId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
         SampleDiff sample = sampleDiffService.get(sampleId);
         ReviewRequest request = new ReviewRequest(
                 sample.title(),
@@ -121,8 +130,10 @@ public class ReviewController {
                 null
         );
 
-        ReviewJobResponse job = reviewWorkflowService.submit(request);
-        reviewAsyncExecutor.execute(job.reviewId());
+        ReviewJobResponse job = reviewWorkflowService.submit(request, idempotencyKey);
+        if (!job.replayed()) {
+            reviewAsyncExecutor.execute(job.reviewId());
+        }
         return job;
     }
 

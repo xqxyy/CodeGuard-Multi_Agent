@@ -59,6 +59,10 @@ public class CodeGuardChatModelProvider {
         return resolveModel(LlmSettings.resolve());
     }
 
+    public boolean configured() {
+        return LlmSettings.resolve().hasApiKey();
+    }
+
     /** 根据供应商决定接口地址。用户显式配置 BASE_URL 时，优先使用配置值。 */
     private String resolveBaseUrl(LlmSettings settings) {
         if (settings.baseUrl() != null && !settings.baseUrl().isBlank()) {

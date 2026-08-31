@@ -6,6 +6,7 @@ import com.codeguard.agent.domain.MergeRecommendation;
 import com.codeguard.agent.domain.ParsedDiff;
 import com.codeguard.agent.domain.ReviewSourceType;
 import com.codeguard.agent.domain.ReviewStatus;
+import com.codeguard.agent.domain.TenantDefaults;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -30,6 +31,10 @@ public class ReviewEntity {
     @Id
     private UUID id;
 
+    /** 所属组织。企业演示里用它隔离不同客户或团队的数据。 */
+    @Column(nullable = false, length = 80)
+    private String organizationKey;
+
     /** 所属项目。企业场景里同一个平台会服务多个项目。 */
     @Column(nullable = false, length = 80)
     private String projectKey;
@@ -42,6 +47,10 @@ public class ReviewEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 40)
     private ReviewSourceType sourceType;
+
+    /** 客户端提交的幂等键。相同组织内重复提交同一个 key，会复用同一个 Review 任务。 */
+    @Column(length = 120)
+    private String idempotencyKey;
 
     /** 来源链接，例如 GitHub PR URL。 */
     @Column(length = 600)
@@ -107,7 +116,7 @@ public class ReviewEntity {
     private boolean enableLlmReview;
 
     /** 是否把 P0 风险视为阻断合并。 */
-    @Column(nullable = false)
+    @Column(name = "fail_on_p0", nullable = false)
     private boolean failOnP0;
 
     /** 创建时间。 */
@@ -124,14 +133,50 @@ public class ReviewEntity {
      * 创建一条异步 Review 任务。
      */
     public static ReviewEntity createQueued(ReviewRequest request, ParsedDiff parsedDiff) {
+        return createQueued(
+                TenantDefaults.DEFAULT_ORGANIZATION_KEY,
+                request,
+                parsedDiff,
+                request.normalizedOptions()
+        );
+    }
+
+    /**
+     * 使用组织和策略后的选项创建 Review。
+     *
+     * request 保存“用户提交了什么”，effectiveOptions 保存“平台最终按什么策略执行”。
+     */
+    public static ReviewEntity createQueued(
+            String organizationKey,
+            ReviewRequest request,
+            ParsedDiff parsedDiff,
+            ReviewOptions effectiveOptions
+    ) {
+        return createQueued(organizationKey, request, parsedDiff, effectiveOptions, null);
+    }
+
+    /**
+     * 使用组织、策略后的选项和幂等 key 创建 Review。
+     */
+    public static ReviewEntity createQueued(
+            String organizationKey,
+            ReviewRequest request,
+            ParsedDiff parsedDiff,
+            ReviewOptions effectiveOptions,
+            String idempotencyKey
+    ) {
         Instant now = Instant.now();
-        ReviewOptions options = request.normalizedOptions();
+        ReviewOptions options = effectiveOptions == null ? request.normalizedOptions() : effectiveOptions.withDefaults();
 
         ReviewEntity entity = new ReviewEntity();
         entity.id = UUID.randomUUID();
+        entity.organizationKey = organizationKey == null || organizationKey.isBlank()
+                ? TenantDefaults.DEFAULT_ORGANIZATION_KEY
+                : organizationKey.strip();
         entity.projectKey = request.normalizedProjectKey();
         entity.repositoryName = request.normalizedRepositoryName();
         entity.sourceType = parseSourceType(request.normalizedSourceType());
+        entity.idempotencyKey = blankToNull(idempotencyKey);
         entity.sourceUrl = blankToNull(request.sourceUrl());
         entity.title = request.title() == null || request.title().isBlank()
                 ? "Untitled review"
@@ -205,6 +250,10 @@ public class ReviewEntity {
         return id;
     }
 
+    public String getOrganizationKey() {
+        return organizationKey;
+    }
+
     public String getProjectKey() {
         return projectKey;
     }
@@ -215,6 +264,10 @@ public class ReviewEntity {
 
     public ReviewSourceType getSourceType() {
         return sourceType;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
     }
 
     public String getSourceUrl() {

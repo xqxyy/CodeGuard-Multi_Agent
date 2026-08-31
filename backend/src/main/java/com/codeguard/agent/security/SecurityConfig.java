@@ -31,8 +31,16 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                         .requestMatchers("/api/health", "/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers(
+                                "/swagger-ui/**",
+                                "/swagger-ui.html",
+                                "/v3/api-docs",
+                                "/v3/api-docs/**",
+                                "/v3/api-docs.yaml")
+                        .permitAll()
                         .requestMatchers("/h2-console/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/projects").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/projects/*/policy").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.POST, "/api/reviews/**").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.POST, "/api/samples/*/reviews").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.POST, "/api/samples/*/reviews/**").hasAnyRole("ADMIN", "DEVELOPER")

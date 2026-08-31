@@ -55,12 +55,26 @@ public class LlmReviewAgent {
         String diffSummary = diffSummary(context);
         String ruleFindingsJson = "[]";
         String diffSnippet = diffSnippet(context);
+        String contextSummary = contextSummary(context);
+        String knowledgeSnippets = knowledgeSnippets(context);
 
         try {
             ruleFindingsJson = objectMapper.writeValueAsString(ruleFindings);
-            String promptAudit = promptAudit(diffSummary, ruleFindingsJson, diffSnippet);
+            String promptAudit = promptAudit(
+                    diffSummary,
+                    ruleFindingsJson,
+                    diffSnippet,
+                    contextSummary,
+                    knowledgeSnippets
+            );
 
-            String rawJson = agent(chatModel.get()).review(diffSummary, ruleFindingsJson, diffSnippet);
+            String rawJson = agent(chatModel.get()).review(
+                    diffSummary,
+                    ruleFindingsJson,
+                    diffSnippet,
+                    contextSummary,
+                    knowledgeSnippets
+            );
             List<ReviewFinding> findings = parseFindings(rawJson);
 
             Instant endedAt = Instant.now();
@@ -94,7 +108,7 @@ public class LlmReviewAgent {
                     Duration.between(startedAt, endedAt).toMillis(),
                     startedAt,
                     endedAt,
-                    promptAudit(diffSummary, ruleFindingsJson, diffSnippet),
+                    promptAudit(diffSummary, ruleFindingsJson, diffSnippet, contextSummary, knowledgeSnippets),
                     null,
                     chatModelProvider.modelName(),
                     chatModelProvider.providerName(),
@@ -231,7 +245,44 @@ public class LlmReviewAgent {
         return builder.toString();
     }
 
-    private String promptAudit(String diffSummary, String ruleFindingsJson, String diffSnippet) {
+    private String contextSummary(ReviewContext context) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(context.contextSnapshot().summary()).append('\n');
+        context.contextSnapshot().observations().stream()
+                .limit(20)
+                .forEach(observation -> builder
+                        .append("- [")
+                        .append(observation.toolName())
+                        .append("] ")
+                        .append(observation.title())
+                        .append(": ")
+                        .append(observation.detail())
+                        .append('\n'));
+        return builder.toString();
+    }
+
+    private String knowledgeSnippets(ReviewContext context) {
+        StringBuilder builder = new StringBuilder();
+        context.contextSnapshot().knowledgeSnippets().forEach(snippet -> builder
+                .append("- ")
+                .append(snippet.title())
+                .append(" (")
+                .append(snippet.source())
+                .append(", score=")
+                .append(String.format(Locale.ROOT, "%.2f", snippet.score()))
+                .append("): ")
+                .append(snippet.content())
+                .append('\n'));
+        return builder.toString();
+    }
+
+    private String promptAudit(
+            String diffSummary,
+            String ruleFindingsJson,
+            String diffSnippet,
+            String contextSummary,
+            String knowledgeSnippets
+    ) {
         String audit = """
                 diffSummary:
                 %s
@@ -241,7 +292,13 @@ public class LlmReviewAgent {
 
                 diffSnippet:
                 %s
-                """.formatted(diffSummary, ruleFindingsJson, diffSnippet);
+
+                contextSummary:
+                %s
+
+                knowledgeSnippets:
+                %s
+                """.formatted(diffSummary, ruleFindingsJson, diffSnippet, contextSummary, knowledgeSnippets);
 
         return audit.length() > 12000 ? audit.substring(0, 12000) + "\n...truncated" : audit;
     }

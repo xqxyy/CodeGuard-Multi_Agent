@@ -1,5 +1,6 @@
 package com.codeguard.agent.persistence;
 
+import com.codeguard.agent.domain.Severity;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -17,4 +18,6 @@ public interface ReviewIssueRepository extends JpaRepository<ReviewIssueEntity, 
 
     @Transactional
     void deleteByReviewId(UUID reviewId);
+
+    long countByReviewOrganizationKeyAndSeverity(String organizationKey, Severity severity);
 }

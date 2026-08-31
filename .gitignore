@@ -21,6 +21,8 @@ logs/
 # Local-only documents and secrets
 README_PRIVATE.md
 README_LOCAL.md
+NEXT_SESSION_CONTEXT.md
+private_docs/
 backend/src/main/java/com/codeguard/agent/config/CodeGuardLocalLlmConfig.java
 
 # OS files

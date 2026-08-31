@@ -1,5 +1,6 @@
 package com.codeguard.agent.persistence;
 
+import com.codeguard.agent.domain.TenantDefaults;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -19,6 +20,9 @@ public class ProjectEntity {
     @Id
     private UUID id;
 
+    @Column(nullable = false, length = 80)
+    private String organizationKey;
+
     @Column(nullable = false, unique = true, length = 80)
     private String projectKey;
 
@@ -37,10 +41,17 @@ public class ProjectEntity {
     protected ProjectEntity() {}
 
     public static ProjectEntity create(String projectKey, String name, String description) {
+        return create(TenantDefaults.DEFAULT_ORGANIZATION_KEY, projectKey, name, description);
+    }
+
+    public static ProjectEntity create(String organizationKey, String projectKey, String name, String description) {
         Instant now = Instant.now();
 
         ProjectEntity entity = new ProjectEntity();
         entity.id = UUID.randomUUID();
+        entity.organizationKey = organizationKey == null || organizationKey.isBlank()
+                ? TenantDefaults.DEFAULT_ORGANIZATION_KEY
+                : organizationKey.strip();
         entity.projectKey = projectKey;
         entity.name = name == null || name.isBlank() ? projectKey : name.strip();
         entity.description = description;
@@ -51,6 +62,10 @@ public class ProjectEntity {
 
     public UUID getId() {
         return id;
+    }
+
+    public String getOrganizationKey() {
+        return organizationKey;
     }
 
     public String getProjectKey() {

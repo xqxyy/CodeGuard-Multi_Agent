@@ -10,7 +10,10 @@ import com.codeguard.agent.domain.IssueTag;
 import com.codeguard.agent.domain.MergeRecommendation;
 import com.codeguard.agent.domain.ReviewFinding;
 import com.codeguard.agent.domain.Severity;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -76,6 +79,18 @@ public class SummaryAgent {
         builder.append("- 建议：").append(recommendation).append("\n");
         builder.append("- 风险分：").append(riskScore).append("/100\n\n");
 
+        Map<Severity, Long> severityCounts = findings.stream()
+                .collect(Collectors.groupingBy(ReviewFinding::severity, Collectors.counting()));
+        builder.append("## 风险分布\n\n");
+        for (Severity severity : Severity.values()) {
+            builder.append("- ")
+                    .append(severity)
+                    .append("：")
+                    .append(severityCounts.getOrDefault(severity, 0L))
+                    .append("\n");
+        }
+        builder.append("\n");
+
         builder.append("## 问题列表\n\n");
 
         if (findings.isEmpty()) {
@@ -83,17 +98,44 @@ public class SummaryAgent {
             return builder.toString();
         }
 
-        for (ReviewFinding finding : findings) {
-            builder.append("- [")
+        List<ReviewFinding> sorted = findings.stream()
+                .sorted(Comparator.comparing(ReviewFinding::severity).thenComparing(ReviewFinding::tag))
+                .toList();
+
+        int index = 1;
+        for (ReviewFinding finding : sorted) {
+            builder.append("### ")
+                    .append(index++)
+                    .append(". [")
                     .append(finding.severity())
                     .append("][")
                     .append(finding.tag())
                     .append("] ")
                     .append(finding.title())
-                    .append("\n");
+                    .append("\n\n");
+            builder.append("- Agent：").append(finding.agentType()).append("\n");
+            builder.append("- 位置：").append(location(finding)).append("\n");
+            builder.append("- 说明：").append(finding.detail()).append("\n");
+            builder.append("- 建议：").append(finding.suggestion()).append("\n");
+            if (finding.evidence() != null && !finding.evidence().isBlank()) {
+                builder.append("- 证据：`")
+                        .append(finding.evidence().replace("`", "'"))
+                        .append("`\n");
+            }
+            builder.append("\n");
         }
 
         return builder.toString();
+    }
+
+    private String location(ReviewFinding finding) {
+        if (finding.filePath() == null || finding.filePath().isBlank()) {
+            return "全局";
+        }
+        if (finding.lineNumber() == null) {
+            return finding.filePath();
+        }
+        return finding.filePath() + ":" + finding.lineNumber();
     }
 
     public record SummaryResult(

@@ -44,9 +44,23 @@ management:
       probes:
         enabled: true
 
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    # Swagger 页面展示请求耗时，联调接口时更容易判断慢接口。
+    display-request-duration: true
+    # 按标签和 HTTP 方法排序，接口列表更适合演示和阅读。
+    tags-sorter: alpha
+    operations-sorter: method
+
 codeguard:
   review:
     max-diff-chars: 200000
+    submit-rate-limit-per-minute: 30
+    max-active-reviews-per-organization: 20
+    running-timeout-minutes: 30
+    queued-dispatch-batch-size: 5
     async-poll-interval-ms: 1500
 
   llm:

@@ -16,6 +16,7 @@ public record ReviewResponse(
         UUID id,
         String title,
         ReviewStatus status,
+        String organizationKey,
         String projectKey,
         String repositoryName,
         ReviewSourceType sourceType,

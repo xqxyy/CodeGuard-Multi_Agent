@@ -15,6 +15,7 @@ public record ReviewListItem(
         UUID id,
         String title,
         ReviewStatus status,
+        String organizationKey,
         String projectKey,
         String repositoryName,
         ReviewSourceType sourceType,

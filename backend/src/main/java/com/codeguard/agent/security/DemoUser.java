@@ -9,5 +9,6 @@ public record DemoUser(
         String username,
         String password,
         String displayName,
-        String role
+        String role,
+        String organizationKey
 ) {}

@@ -1,5 +1,6 @@
 package com.codeguard.agent.security;
 
+import com.codeguard.agent.domain.TenantDefaults;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -40,6 +41,7 @@ public class TokenService {
                     "sub", user.username(),
                     "name", user.displayName(),
                     "role", user.role(),
+                    "org", user.organizationKey(),
                     "exp", Instant.now().plusSeconds(ttlMinutes * 60).getEpochSecond()
             ));
             String unsigned = header + "." + payload;
@@ -70,7 +72,8 @@ public class TokenService {
             return new TokenPrincipal(
                     payload.path("sub").asText(),
                     payload.path("name").asText(),
-                    payload.path("role").asText()
+                    payload.path("role").asText(),
+                    payload.path("org").asText(TenantDefaults.DEFAULT_ORGANIZATION_KEY)
             );
         } catch (Exception exception) {
             throw new IllegalArgumentException("Invalid token", exception);
@@ -91,5 +94,5 @@ public class TokenService {
                 .encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
     }
 
-    public record TokenPrincipal(String username, String displayName, String role) {}
+    public record TokenPrincipal(String username, String displayName, String role, String organizationKey) {}
 }

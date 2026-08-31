@@ -3,6 +3,7 @@ package com.codeguard.agent.api;
 import com.codeguard.agent.security.DemoUser;
 import com.codeguard.agent.security.DemoUserService;
 import com.codeguard.agent.security.TokenService;
+import com.codeguard.agent.service.AuditLogService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,10 +21,12 @@ public class AuthController {
 
     private final DemoUserService demoUserService;
     private final TokenService tokenService;
+    private final AuditLogService auditLogService;
 
-    public AuthController(DemoUserService demoUserService, TokenService tokenService) {
+    public AuthController(DemoUserService demoUserService, TokenService tokenService, AuditLogService auditLogService) {
         this.demoUserService = demoUserService;
         this.tokenService = tokenService;
+        this.auditLogService = auditLogService;
     }
 
     @PostMapping("/login")
@@ -31,12 +34,23 @@ public class AuthController {
         DemoUser user = demoUserService.authenticate(request.username(), request.password())
                 .orElseThrow(() -> new IllegalArgumentException("Invalid username or password"));
 
+        auditLogService.recordAs(
+                user.organizationKey(),
+                user.username(),
+                user.role(),
+                "USER_LOGIN",
+                "AUTH",
+                user.username(),
+                "用户登录 CodeGuard 控制台"
+        );
+
         return new LoginResponse(
                 tokenService.createToken(user),
                 "Bearer",
                 user.username(),
                 user.displayName(),
-                user.role()
+                user.role(),
+                user.organizationKey()
         );
     }
 }

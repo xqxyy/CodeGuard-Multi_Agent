@@ -5,5 +5,6 @@ public record LoginResponse(
         String tokenType,
         String username,
         String displayName,
-        String role
+        String role,
+        String organizationKey
 ) {}

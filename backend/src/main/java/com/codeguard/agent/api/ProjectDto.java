@@ -5,6 +5,7 @@ import java.util.UUID;
 
 public record ProjectDto(
         UUID id,
+        String organizationKey,
         String projectKey,
         String name,
         String description,

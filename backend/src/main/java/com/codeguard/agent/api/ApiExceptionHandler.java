@@ -1,5 +1,6 @@
 package com.codeguard.agent.api;
 
+import com.codeguard.agent.service.RateLimitExceededException;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -35,7 +36,8 @@ public class ApiExceptionHandler {
                 Instant.now(),
                 HttpStatus.BAD_REQUEST.value(),
                 HttpStatus.BAD_REQUEST.getReasonPhrase(),
-                message
+                message,
+                RequestIdFilter.currentRequestId()
         );
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
@@ -52,7 +54,8 @@ public class ApiExceptionHandler {
                 Instant.now(),
                 HttpStatus.NOT_FOUND.value(),
                 HttpStatus.NOT_FOUND.getReasonPhrase(),
-                exception.getMessage()
+                exception.getMessage(),
+                RequestIdFilter.currentRequestId()
         );
 
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
@@ -69,9 +72,29 @@ public class ApiExceptionHandler {
                 Instant.now(),
                 HttpStatus.BAD_REQUEST.value(),
                 HttpStatus.BAD_REQUEST.getReasonPhrase(),
-                exception.getMessage()
+                exception.getMessage(),
+                RequestIdFilter.currentRequestId()
         );
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    /**
+     * 处理限流和组织活跃任务数超限。
+     */
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleRateLimit(RateLimitExceededException exception) {
+        ApiErrorResponse response = new ApiErrorResponse(
+                Instant.now(),
+                HttpStatus.TOO_MANY_REQUESTS.value(),
+                HttpStatus.TOO_MANY_REQUESTS.getReasonPhrase(),
+                exception.getMessage(),
+                RequestIdFilter.currentRequestId()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", String.valueOf(exception.retryAfterSeconds()))
+                .body(response);
     }
 }

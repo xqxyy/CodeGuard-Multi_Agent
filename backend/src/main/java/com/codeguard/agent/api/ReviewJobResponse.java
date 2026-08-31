@@ -12,5 +12,6 @@ public record ReviewJobResponse(
         UUID reviewId,
         ReviewStatus status,
         String pollUrl,
-        String detailUrl
+        String detailUrl,
+        boolean replayed
 ) {}

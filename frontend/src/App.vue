@@ -1,29 +1,49 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Activity,
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
   ClipboardList,
+  Clock3,
+  Database,
   Download,
   FileCode2,
+  FileText,
   FolderKanban,
   GitPullRequest,
   History,
+  KeyRound,
+  LayoutDashboard,
   Loader2,
+  Lock,
   LogOut,
   Play,
   RefreshCw,
+  Save,
+  Search,
+  Settings,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles
+  Sparkles,
+  Users,
+  XCircle
 } from '@lucide/vue';
 import {
   clearAuth,
   createProject,
+  getCurrentOrganization,
+  getDashboard,
   getMarkdown,
+  getPolicy,
   getProgress,
   getReview,
   getSarif,
   getStoredAuth,
+  listAgents,
+  listAuditLogs,
+  listPolicies,
   listProjectReviews,
   listProjects,
   listReviews,
@@ -31,33 +51,57 @@ import {
   login,
   parseDiff,
   reviewSample,
+  savePolicy,
   storeAuth,
   submitGithubPr,
   submitReview
 } from './services/api';
 
-// 登录状态。企业演示里先用内置用户换取 Bearer Token。
 const storedAuth = getStoredAuth();
-const token = ref(storedAuth.token);
-const currentUser = ref(storedAuth.user);
-const loginForm = ref({ username: 'admin', password: 'codeguard123' });
 
-// 项目、样例、历史记录都是工作台左侧的上下文。
+const isAuthenticated = ref(Boolean(storedAuth.token));
+const currentUser = ref(storedAuth.user);
+const organization = ref(null);
+const activeView = ref('overview');
+const activeResultTab = ref('issues');
+
+const loginForm = ref({ username: 'admin', password: 'codeguard123' });
+const loginLoading = ref(false);
+const shellLoading = ref(false);
+const submitting = ref(false);
+const policySaving = ref(false);
+const parsing = ref(false);
+const error = ref('');
+const success = ref('');
+
+const dashboard = ref(null);
 const projects = ref([]);
 const samples = ref([]);
+const agents = ref([]);
+const auditLogs = ref([]);
+const policies = ref([]);
 const history = ref([]);
+const parsedPreview = ref(null);
+
 const selectedProjectKey = ref('default');
 const selectedSampleId = ref('');
-
-// 中间编辑区：可以粘贴 diff，也可以从样例或 GitHub PR 填充。
-const title = ref('手动粘贴的代码变更');
+const title = ref('人工提交 Diff 审查');
 const repositoryName = ref('manual-diff');
-const diffText = ref('');
-const parsedPreview = ref(null);
-const githubForm = ref({ repository: 'spring-projects/spring-petclinic', pullNumber: 1 });
-const newProject = ref({ projectKey: '', name: '', description: '' });
+const diffText = ref(defaultDiff());
 
-// Agent 开关。前端传到后端后，后端会保存到 Review 任务里。
+const githubForm = ref({
+  owner: '',
+  repo: '',
+  pullNumber: '',
+  projectKey: 'default'
+});
+
+const newProject = ref({
+  projectKey: '',
+  name: '',
+  description: ''
+});
+
 const options = ref({
   enableBugLogic: true,
   enableSecurity: true,
@@ -67,145 +111,213 @@ const options = ref({
   failOnP0: true
 });
 
-// 右侧结果区：异步任务进度、最终结果、报告。
+const policyForm = ref(defaultPolicyForm());
 const currentJob = ref(null);
 const progress = ref(null);
 const currentReview = ref(null);
 const markdownText = ref('');
-const activeTab = ref('issues');
+let progressTimer = null;
 
-const loading = ref(false);
-const loadingMessage = ref('');
-const errorMessage = ref('');
-let pollTimer = null;
+const navItems = [
+  { key: 'overview', label: '概览', icon: LayoutDashboard },
+  { key: 'reviews', label: '审查', icon: FileCode2 },
+  { key: 'policies', label: '策略', icon: SlidersHorizontal },
+  { key: 'agents', label: 'Agent', icon: Bot },
+  { key: 'audit', label: '审计', icon: History },
+  { key: 'assets', label: '资产', icon: Database }
+];
 
-const selectedSample = computed(() =>
-  samples.value.find((sample) => sample.id === selectedSampleId.value)
-);
-
-const diffLineCount = computed(() =>
-  diffText.value ? diffText.value.split(/\r?\n/).length : 0
-);
-
-const canRunReview = computed(() => diffText.value.trim().length >= 20 && !loading.value);
-
-const sortedIssues = computed(() => {
-  const severityOrder = { P0: 0, P1: 1, P2: 2, P3: 3 };
-  return [...(currentReview.value?.issues ?? [])].sort((left, right) => {
-    return (severityOrder[left.severity] ?? 99) - (severityOrder[right.severity] ?? 99);
-  });
-});
-
-const issueCountBySeverity = computed(() => {
-  const counter = { P0: 0, P1: 0, P2: 0, P3: 0 };
-  for (const issue of currentReview.value?.issues ?? []) {
-    counter[issue.severity] = (counter[issue.severity] ?? 0) + 1;
+const projectChoices = computed(() => {
+  if (projects.value.length === 0) {
+    return [{ projectKey: 'default', name: '默认项目' }];
   }
-  return counter;
+  return projects.value;
 });
 
+const selectedProjectName = computed(() => {
+  return projectChoices.value.find(project => project.projectKey === selectedProjectKey.value)?.name
+    ?? selectedProjectKey.value;
+});
+
+const latestReviews = computed(() => dashboard.value?.latestReviews ?? history.value);
+const issueList = computed(() => currentReview.value?.issues ?? []);
+const traceList = computed(() => progress.value?.traces ?? currentReview.value?.traces ?? []);
+const completedAgentCount = computed(() => progress.value?.completedAgents ?? 0);
+const totalAgentCount = computed(() => progress.value?.totalAgents ?? 7);
 const progressPercent = computed(() => {
-  if (!progress.value?.totalAgents) {
-    return 0;
-  }
-
+  if (!progress.value) return 0;
   const done = progress.value.completedAgents + progress.value.failedAgents + progress.value.skippedAgents;
-  return Math.min(100, Math.round((done / progress.value.totalAgents) * 100));
+  return Math.min(100, Math.round((done / Math.max(1, progress.value.totalAgents)) * 100));
 });
+
+const severityCounts = computed(() => {
+  const counts = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const issue of issueList.value) {
+    counts[issue.severity] = (counts[issue.severity] ?? 0) + 1;
+  }
+  return counts;
+});
+
+const dashboardStatus = computed(() => dashboard.value?.statusCounts ?? {});
+const readyAgents = computed(() => agents.value.filter(agent => agent.status === 'READY').length);
+const hasRunningJob = computed(() => ['QUEUED', 'RUNNING'].includes(progress.value?.status));
 
 onMounted(async () => {
-  if (token.value) {
-    await refreshInitialData();
+  window.addEventListener('codeguard-auth-expired', handleAuthExpired);
+  if (isAuthenticated.value) {
+    await refreshAll();
   }
 });
 
-onBeforeUnmount(() => {
+onUnmounted(() => {
+  window.removeEventListener('codeguard-auth-expired', handleAuthExpired);
   stopPolling();
 });
 
-async function doLogin() {
-  await withLoading('正在登录', async () => {
+watch(selectedProjectKey, async projectKey => {
+  githubForm.value.projectKey = projectKey;
+  if (isAuthenticated.value) {
+    await Promise.allSettled([
+      loadHistory(),
+      loadPolicy(projectKey)
+    ]);
+  }
+});
+
+async function handleLogin() {
+  loginLoading.value = true;
+  error.value = '';
+  try {
     const response = await login(loginForm.value.username, loginForm.value.password);
     storeAuth(response);
-    token.value = response.token;
     currentUser.value = {
       username: response.username,
       displayName: response.displayName,
-      role: response.role
+      role: response.role,
+      organizationKey: response.organizationKey
     };
-    await refreshInitialData();
-  });
+    isAuthenticated.value = true;
+    await refreshAll();
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    loginLoading.value = false;
+  }
 }
 
-function doLogout() {
-  clearAuth();
-  token.value = null;
-  currentUser.value = null;
+function logout() {
   stopPolling();
+  clearAuth();
+  isAuthenticated.value = false;
+  currentUser.value = null;
+  currentJob.value = null;
+  progress.value = null;
+  currentReview.value = null;
+  markdownText.value = '';
 }
 
-async function refreshInitialData() {
-  await withLoading('正在加载工作台数据', async () => {
-    const [projectList, sampleList, reviewList] = await Promise.all([
+function handleAuthExpired(event) {
+  stopPolling();
+  isAuthenticated.value = false;
+  currentUser.value = null;
+  currentJob.value = null;
+  progress.value = null;
+  currentReview.value = null;
+  markdownText.value = '';
+  error.value = event.detail?.message ?? '登录状态已失效，请重新登录';
+}
+
+async function refreshAll() {
+  shellLoading.value = true;
+  error.value = '';
+  try {
+    const [
+      organizationResult,
+      dashboardResult,
+      projectResult,
+      sampleResult,
+      agentResult,
+      auditResult,
+      policyResult,
+      reviewResult
+    ] = await Promise.all([
+      getCurrentOrganization(),
+      getDashboard(),
       listProjects(),
       listSamples(),
+      listAgents(),
+      listAuditLogs(),
+      listPolicies(),
       listReviews()
     ]);
 
-    projects.value = projectList;
-    samples.value = sampleList;
-    history.value = reviewList;
+    organization.value = organizationResult;
+    dashboard.value = dashboardResult;
+    projects.value = projectResult;
+    samples.value = sampleResult;
+    agents.value = agentResult;
+    auditLogs.value = auditResult;
+    policies.value = policyResult;
+    history.value = reviewResult;
 
-    if (!selectedProjectKey.value && projectList.length > 0) {
-      selectedProjectKey.value = projectList[0].projectKey;
+    if (!selectedSampleId.value && samples.value.length > 0) {
+      selectedSampleId.value = samples.value[0].id;
     }
-
-    if (!diffText.value && sampleList.length > 0) {
-      chooseSample(sampleList[0]);
+    if (projects.value.length > 0 && !projects.value.some(project => project.projectKey === selectedProjectKey.value)) {
+      selectedProjectKey.value = projects.value[0].projectKey;
     }
-  });
+    await loadPolicy(selectedProjectKey.value);
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    shellLoading.value = false;
+  }
 }
 
-async function refreshProjectHistory() {
-  if (!selectedProjectKey.value) {
-    history.value = await listReviews();
-    return;
-  }
-
+async function loadHistory() {
   history.value = await listProjectReviews(selectedProjectKey.value);
 }
 
-async function createNewProject() {
+async function loadPolicy(projectKey) {
+  policyForm.value = toPolicyForm(await getPolicy(projectKey));
+}
+
+async function handleCreateProject() {
+  error.value = '';
+  success.value = '';
   if (!newProject.value.projectKey.trim()) {
-    errorMessage.value = '请先填写 projectKey';
+    error.value = '请填写项目 Key';
     return;
   }
 
-  await withLoading('正在创建项目', async () => {
+  try {
     const created = await createProject(newProject.value);
     selectedProjectKey.value = created.projectKey;
     newProject.value = { projectKey: '', name: '', description: '' };
-    await refreshInitialData();
-  });
+    success.value = `已创建项目 ${created.name}`;
+    await refreshAll();
+  } catch (exception) {
+    error.value = exception.message;
+  }
 }
 
-function chooseSample(sample) {
-  selectedSampleId.value = sample.id;
-  title.value = sample.title;
-  repositoryName.value = 'sample-library';
-  diffText.value = sample.diffText;
-  parsedPreview.value = null;
-  errorMessage.value = '';
-}
-
-async function runParsePreview() {
-  await withLoading('正在解析 diff', async () => {
+async function handleParseDiff() {
+  parsing.value = true;
+  error.value = '';
+  try {
     parsedPreview.value = await parseDiff(title.value, diffText.value);
-  });
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    parsing.value = false;
+  }
 }
 
-async function runManualReview() {
-  await withLoading('已提交审查任务', async () => {
+async function handleSubmitReview() {
+  submitting.value = true;
+  error.value = '';
+  success.value = '';
+  try {
     const job = await submitReview({
       title: title.value,
       diffText: diffText.value,
@@ -214,116 +326,158 @@ async function runManualReview() {
       sourceType: 'MANUAL',
       options: options.value
     });
-    await startTracking(job);
-  });
+    success.value = '审查任务已提交';
+    activeResultTab.value = 'agents';
+    await startPolling(job.reviewId);
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    submitting.value = false;
+  }
 }
 
-async function runSelectedSample() {
-  if (!selectedSampleId.value) {
-    return;
-  }
+async function handleSampleReview() {
+  if (!selectedSampleId.value) return;
 
-  await withLoading('已提交样例审查任务', async () => {
+  submitting.value = true;
+  error.value = '';
+  success.value = '';
+  try {
     const job = await reviewSample(selectedSampleId.value);
-    await startTracking(job);
-  });
-}
-
-async function runGithubReview() {
-  await withLoading('正在拉取 GitHub PR diff', async () => {
-    const job = await submitGithubPr({
-      repository: githubForm.value.repository,
-      pullNumber: Number(githubForm.value.pullNumber),
-      projectKey: selectedProjectKey.value,
-      options: options.value
-    });
-    await startTracking(job);
-  });
-}
-
-async function startTracking(job) {
-  currentJob.value = job;
-  currentReview.value = null;
-  markdownText.value = '';
-  progress.value = await getProgress(job.reviewId);
-  activeTab.value = 'agents';
-  stopPolling();
-
-  pollTimer = window.setInterval(async () => {
-    try {
-      const nextProgress = await getProgress(job.reviewId);
-      progress.value = nextProgress;
-
-      if (['COMPLETED', 'FAILED', 'CANCELED'].includes(nextProgress.status)) {
-        stopPolling();
-        currentReview.value = await getReview(job.reviewId);
-        markdownText.value = currentReview.value.markdown ?? '';
-        await refreshProjectHistory();
-        activeTab.value = nextProgress.status === 'COMPLETED' ? 'issues' : 'agents';
-      }
-    } catch (error) {
-      stopPolling();
-      errorMessage.value = error.message || '轮询进度失败';
-    }
-  }, 1500);
-}
-
-async function openReview(reviewId) {
-  await withLoading('正在打开历史审查', async () => {
-    currentJob.value = { reviewId };
-    progress.value = await getProgress(reviewId);
-    currentReview.value = await getReview(reviewId);
-    const markdown = await getMarkdown(reviewId);
-    markdownText.value = markdown.markdown;
-    activeTab.value = 'issues';
-  });
-}
-
-async function downloadSarif() {
-  if (!currentReview.value?.id) {
-    return;
+    success.value = '样例审查任务已提交';
+    activeView.value = 'reviews';
+    activeResultTab.value = 'agents';
+    await startPolling(job.reviewId);
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    submitting.value = false;
   }
+}
 
-  const sarif = await getSarif(currentReview.value.id);
-  const blob = new Blob([JSON.stringify(sarif, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `codeguard-${currentReview.value.id}.sarif.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+async function handleGithubReview() {
+  submitting.value = true;
+  error.value = '';
+  success.value = '';
+  try {
+    const repository = `${githubForm.value.owner.trim()}/${githubForm.value.repo.trim()}`;
+    if (!githubForm.value.owner.trim() || !githubForm.value.repo.trim() || !githubForm.value.pullNumber) {
+      error.value = '请填写 GitHub owner、repo 和 PR 编号';
+      return;
+    }
+
+    const job = await submitGithubPr({
+      repository,
+      pullNumber: Number(githubForm.value.pullNumber),
+      projectKey: selectedProjectKey.value
+    });
+    success.value = 'GitHub PR 审查任务已提交';
+    activeResultTab.value = 'agents';
+    await startPolling(job.reviewId);
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    submitting.value = false;
+  }
+}
+
+async function startPolling(reviewId) {
+  currentJob.value = { reviewId };
+  stopPolling();
+  await refreshProgress(reviewId);
+  progressTimer = window.setInterval(() => refreshProgress(reviewId), 1500);
+}
+
+async function refreshProgress(reviewId = currentJob.value?.reviewId) {
+  if (!reviewId) return;
+
+  progress.value = await getProgress(reviewId);
+  if (['COMPLETED', 'FAILED', 'CANCELED'].includes(progress.value.status)) {
+    stopPolling();
+    await loadReviewDetail(reviewId);
+    await Promise.allSettled([
+      getDashboard().then(value => { dashboard.value = value; }),
+      loadHistory(),
+      listAuditLogs().then(value => { auditLogs.value = value; })
+    ]);
+  }
 }
 
 function stopPolling() {
-  if (pollTimer) {
-    window.clearInterval(pollTimer);
-    pollTimer = null;
+  if (progressTimer) {
+    window.clearInterval(progressTimer);
+    progressTimer = null;
   }
 }
 
-async function withLoading(message, task) {
-  loading.value = true;
-  loadingMessage.value = message;
-  errorMessage.value = '';
+async function loadReviewDetail(reviewId) {
+  error.value = '';
+  try {
+    currentReview.value = await getReview(reviewId);
+    const markdown = await getMarkdown(reviewId);
+    markdownText.value = markdown.markdown;
+    currentJob.value = { reviewId };
+    activeView.value = 'reviews';
+  } catch (exception) {
+    error.value = exception.message;
+  }
+}
+
+async function handleSavePolicy() {
+  policySaving.value = true;
+  error.value = '';
+  success.value = '';
+  try {
+    const saved = await savePolicy(selectedProjectKey.value, {
+      ...policyForm.value,
+      maxDiffChars: Number(policyForm.value.maxDiffChars)
+    });
+    policyForm.value = toPolicyForm(saved);
+    success.value = '策略已保存';
+    policies.value = await listPolicies();
+  } catch (exception) {
+    error.value = exception.message;
+  } finally {
+    policySaving.value = false;
+  }
+}
+
+async function downloadMarkdown() {
+  if (!markdownText.value) return;
+
+  const blob = new Blob([markdownText.value], { type: 'text/markdown;charset=utf-8' });
+  downloadBlob(blob, `codeguard-review-${currentJob.value?.reviewId ?? 'report'}.md`);
+}
+
+async function downloadSarif() {
+  if (!currentJob.value?.reviewId) return;
 
   try {
-    await task();
-  } catch (error) {
-    errorMessage.value = error.message || '操作失败';
-  } finally {
-    loading.value = false;
-    loadingMessage.value = '';
+    const sarif = await getSarif(currentJob.value.reviewId);
+    const blob = new Blob([JSON.stringify(sarif, null, 2)], { type: 'application/json;charset=utf-8' });
+    downloadBlob(blob, `codeguard-review-${currentJob.value.reviewId}.sarif`);
+  } catch (exception) {
+    error.value = exception.message;
   }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function recommendationLabel(value) {
   const labels = {
-    APPROVE: '可以合并',
-    CAN_MERGE_WITH_NOTES: '可带备注合并',
+    APPROVE: '允许合并',
+    CAN_MERGE_WITH_NOTES: '带备注合并',
     REQUEST_CHANGES: '需要修改',
-    BLOCK: '阻止合并'
+    BLOCK: '阻断合并'
   };
-  return labels[value] ?? value ?? '尚未审查';
+  return labels[value] ?? value ?? '待生成';
 }
 
 function statusLabel(value) {
@@ -332,30 +486,13 @@ function statusLabel(value) {
     RUNNING: '运行中',
     COMPLETED: '已完成',
     FAILED: '失败',
-    CANCELED: '已取消',
-    SKIPPED: '跳过'
+    CANCELED: '已取消'
   };
-  return labels[value] ?? value ?? '-';
-}
-
-function agentLabel(value) {
-  const labels = {
-    ROUTER: 'Router 路由',
-    BUG_LOGIC: 'Bug 逻辑',
-    SECURITY: '安全',
-    CODE_QUALITY: '代码质量',
-    TEST_COVERAGE: '测试覆盖',
-    LLM_REVIEW: 'LLM 复审',
-    SUMMARY: '汇总'
-  };
-  return labels[value] ?? value;
+  return labels[value] ?? value ?? '未知';
 }
 
 function formatDate(value) {
-  if (!value) {
-    return '-';
-  }
-
+  if (!value) return '-';
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -363,303 +500,534 @@ function formatDate(value) {
     minute: '2-digit'
   }).format(new Date(value));
 }
+
+function toPolicyForm(policy) {
+  return {
+    name: policy.name,
+    blockSeverity: policy.blockSeverity,
+    failOnP0: policy.failOnP0,
+    requireTestsForApiChanges: policy.requireTestsForApiChanges,
+    enableBugLogic: policy.enableBugLogic,
+    enableSecurity: policy.enableSecurity,
+    enableCodeQuality: policy.enableCodeQuality,
+    enableTestCoverage: policy.enableTestCoverage,
+    enableLlmReview: policy.enableLlmReview,
+    maxDiffChars: policy.maxDiffChars
+  };
+}
+
+function defaultPolicyForm() {
+  return {
+    name: '企业默认审查策略',
+    blockSeverity: 'P0',
+    failOnP0: true,
+    requireTestsForApiChanges: true,
+    enableBugLogic: true,
+    enableSecurity: true,
+    enableCodeQuality: true,
+    enableTestCoverage: true,
+    enableLlmReview: true,
+    maxDiffChars: 200000
+  };
+}
+
+function defaultDiff() {
+  return `diff --git a/src/main/java/UserService.java b/src/main/java/UserService.java
+--- a/src/main/java/UserService.java
++++ b/src/main/java/UserService.java
+@@ -1,6 +1,8 @@
+ public User find(Long id) {
+-    return repository.findById(id).orElseThrow();
++    System.out.println("debug token=" + apiKey);
++    return null;
+ }
+`;
+}
 </script>
 
 <template>
-  <main v-if="!token" class="login-shell">
-    <section class="login-panel">
-      <p class="eyebrow">Enterprise Demo</p>
-      <h1>CodeGuard Agent</h1>
-      <p class="login-copy">登录后进入多 Agent 代码审查工作台。</p>
+  <main v-if="!isAuthenticated" class="login-page">
+    <section class="login-visual">
+      <div class="brand-mark">
+        <ShieldCheck :size="34" />
+      </div>
+      <p class="eyebrow">CodeGuard Agent</p>
+      <h1>企业级多 Agent 代码审查控制台</h1>
+      <div class="login-metrics">
+        <span>Router</span>
+        <span>Security</span>
+        <span>LLM Review</span>
+      </div>
+    </section>
+
+    <form class="login-card" @submit.prevent="handleLogin">
+      <div>
+        <p class="eyebrow">Secure Sign In</p>
+        <h2>登录工作台</h2>
+      </div>
+
       <label>
         <span>用户名</span>
-        <input v-model="loginForm.username" type="text" />
+        <input v-model="loginForm.username" autocomplete="username" />
       </label>
+
       <label>
         <span>密码</span>
-        <input v-model="loginForm.password" type="password" @keyup.enter="doLogin" />
+        <input v-model="loginForm.password" type="password" autocomplete="current-password" />
       </label>
-      <button class="primary-button wide" type="button" @click="doLogin" :disabled="loading">
-        <ShieldCheck :size="17" />
+
+      <button class="primary-button" type="submit" :disabled="loginLoading">
+        <Loader2 v-if="loginLoading" class="spin" :size="18" />
+        <KeyRound v-else :size="18" />
         登录
       </button>
-      <p class="hint">演示账号：admin / codeguard123</p>
-      <p v-if="errorMessage" class="login-error">{{ errorMessage }}</p>
-    </section>
+
+      <p v-if="error" class="form-error">{{ error }}</p>
+      <p class="demo-account">admin / codeguard123</p>
+    </form>
   </main>
 
-  <main v-else class="app-shell">
-    <section class="top-bar">
-      <div>
-        <p class="eyebrow">Multi Agent Java Backend</p>
-        <h1>CodeGuard Agent 企业工作台</h1>
+  <div v-else class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark small">
+          <ShieldCheck :size="24" />
+        </div>
+        <div>
+          <strong>CodeGuard</strong>
+          <span>Agent Control Plane</span>
+        </div>
       </div>
-      <div class="user-actions">
-        <span>{{ currentUser?.displayName }} · {{ currentUser?.role }}</span>
-        <button class="ghost-button dark" type="button" @click="refreshInitialData" :disabled="loading">
-          <RefreshCw :size="17" />
-          刷新
-        </button>
-        <button class="ghost-button dark" type="button" @click="doLogout">
-          <LogOut :size="17" />
-          退出
-        </button>
+
+      <div class="org-pill">
+        <Users :size="16" />
+        <span>{{ organization?.name ?? currentUser?.organizationKey }}</span>
       </div>
-    </section>
 
-    <section v-if="errorMessage" class="notice error-notice">{{ errorMessage }}</section>
-    <section v-if="loading" class="notice loading-notice">
-      <Loader2 class="spin" :size="18" />
-      {{ loadingMessage }}
-    </section>
+      <nav class="nav-list">
+        <button
+          v-for="item in navItems"
+          :key="item.key"
+          :class="{ active: activeView === item.key }"
+          @click="activeView = item.key"
+        >
+          <component :is="item.icon" :size="18" />
+          <span>{{ item.label }}</span>
+        </button>
+      </nav>
 
-    <section class="workspace-grid enterprise-grid">
-      <aside class="side-rail">
-        <div class="section-title">
-          <FolderKanban :size="18" />
-          项目
+      <div class="side-status">
+        <div>
+          <span>Agent Ready</span>
+          <strong>{{ readyAgents }}/{{ agents.length || 7 }}</strong>
         </div>
-        <select v-model="selectedProjectKey" class="select-field" @change="refreshProjectHistory">
-          <option value="default">default</option>
-          <option v-for="project in projects" :key="project.id" :value="project.projectKey">
-            {{ project.projectKey }}
-          </option>
-        </select>
+        <div>
+          <span>Active Job</span>
+          <strong>{{ hasRunningJob ? 'Running' : 'Idle' }}</strong>
+        </div>
+      </div>
+    </aside>
 
-        <div class="new-project">
-          <input v-model="newProject.projectKey" placeholder="projectKey" />
-          <input v-model="newProject.name" placeholder="项目名" />
-          <button class="ghost-button" type="button" @click="createNewProject">创建项目</button>
+    <main class="main-area">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">{{ selectedProjectName }}</p>
+          <h1>{{ navItems.find(item => item.key === activeView)?.label }}</h1>
         </div>
 
-        <div class="section-title history-title">
-          <ClipboardList :size="18" />
-          内置样例
-        </div>
-        <div class="sample-list">
-          <button
-            v-for="sample in samples"
-            :key="sample.id"
-            class="sample-item"
-            :class="{ active: sample.id === selectedSampleId }"
-            type="button"
-            @click="chooseSample(sample)"
-          >
-            <span class="sample-title">{{ sample.title }}</span>
-            <span class="sample-meta">{{ sample.category }}</span>
+        <div class="topbar-actions">
+          <select v-model="selectedProjectKey" class="project-select">
+            <option v-for="project in projectChoices" :key="project.projectKey" :value="project.projectKey">
+              {{ project.name }} · {{ project.projectKey }}
+            </option>
+          </select>
+          <button class="icon-button" title="刷新数据" @click="refreshAll">
+            <RefreshCw :class="{ spin: shellLoading }" :size="18" />
+          </button>
+          <div class="user-chip">
+            <span>{{ currentUser?.displayName }}</span>
+            <small>{{ currentUser?.role }}</small>
+          </div>
+          <button class="icon-button" title="退出登录" @click="logout">
+            <LogOut :size="18" />
           </button>
         </div>
+      </header>
 
-        <div class="section-title history-title">
-          <History :size="18" />
-          最近审查
-        </div>
-        <div class="history-list">
-          <button
-            v-for="item in history"
-            :key="item.id"
-            class="history-item"
-            type="button"
-            @click="openReview(item.id)"
-          >
-            <span class="history-name">{{ item.title }}</span>
-            <span class="history-meta">
-              {{ item.projectKey }} / {{ item.repositoryName }}
-            </span>
-            <span class="history-meta">
-              {{ recommendationLabel(item.recommendation) }} · 风险 {{ item.riskScore }}
-            </span>
-            <span class="history-time">{{ formatDate(item.createdAt) }}</span>
-          </button>
-          <p v-if="history.length === 0" class="empty-text">还没有审查记录</p>
-        </div>
-      </aside>
+      <div v-if="error" class="toast error">
+        <AlertTriangle :size="18" />
+        {{ error }}
+      </div>
+      <div v-if="success" class="toast success">
+        <CheckCircle2 :size="18" />
+        {{ success }}
+      </div>
 
-      <section class="editor-area">
-        <div class="editor-toolbar">
-          <label class="title-field">
-            <span>审查标题</span>
-            <input v-model="title" type="text" />
+      <section v-if="activeView === 'overview'" class="view-stack">
+        <div class="kpi-grid">
+          <article class="metric-card">
+            <span>审查任务</span>
+            <strong>{{ dashboard?.totalReviews ?? 0 }}</strong>
+            <small>已完成 {{ dashboardStatus.COMPLETED ?? 0 }}</small>
+          </article>
+          <article class="metric-card accent-cyan">
+            <span>平均风险</span>
+            <strong>{{ dashboard?.averageRiskScore ?? 0 }}</strong>
+            <small>高风险 {{ dashboard?.highRiskReviews ?? 0 }}</small>
+          </article>
+          <article class="metric-card accent-red">
+            <span>P0 / P1</span>
+            <strong>{{ dashboard?.p0Issues ?? 0 }} / {{ dashboard?.p1Issues ?? 0 }}</strong>
+            <small>阻断率 {{ dashboard?.blockRate ?? 0 }}%</small>
+          </article>
+          <article class="metric-card accent-violet">
+            <span>项目资产</span>
+            <strong>{{ dashboard?.projectCount ?? 0 }}</strong>
+            <small>仓库 {{ dashboard?.repositoryCount ?? 0 }}</small>
+          </article>
+        </div>
+
+        <div class="overview-layout">
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">Risk Operations</p>
+                <h2>审查状态分布</h2>
+              </div>
+              <Activity :size="20" />
+            </div>
+            <div class="status-bars">
+              <div v-for="status in ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED']" :key="status" class="status-row">
+                <span>{{ statusLabel(status) }}</span>
+                <div class="bar-track">
+                  <div
+                    class="bar-fill"
+                    :style="{ width: `${Math.min(100, ((dashboardStatus[status] ?? 0) / Math.max(1, dashboard?.totalReviews ?? 1)) * 100)}%` }"
+                  />
+                </div>
+                <strong>{{ dashboardStatus[status] ?? 0 }}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">Latest Reviews</p>
+                <h2>最近审查</h2>
+              </div>
+              <ClipboardList :size="20" />
+            </div>
+            <div class="review-table compact">
+              <button
+                v-for="review in latestReviews.slice(0, 8)"
+                :key="review.id"
+                class="review-row"
+                @click="loadReviewDetail(review.id)"
+              >
+                <span>{{ review.title }}</span>
+                <small>{{ recommendationLabel(review.recommendation) }}</small>
+                <strong>{{ review.riskScore }}</strong>
+              </button>
+              <p v-if="latestReviews.length === 0" class="empty-text">暂无审查记录</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-if="activeView === 'reviews'" class="review-workbench">
+        <section class="panel input-panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Review Input</p>
+              <h2>提交代码变更</h2>
+            </div>
+            <FileCode2 :size="20" />
+          </div>
+
+          <div class="form-grid">
+            <label>
+              <span>标题</span>
+              <input v-model="title" />
+            </label>
+            <label>
+              <span>仓库</span>
+              <input v-model="repositoryName" />
+            </label>
+          </div>
+
+          <div class="toggle-grid">
+            <label v-for="(value, key) in options" :key="key" class="toggle-line">
+              <input v-model="options[key]" type="checkbox" />
+              <span>{{ key }}</span>
+            </label>
+          </div>
+
+          <label class="diff-editor">
+            <span>Git Diff</span>
+            <textarea v-model="diffText" spellcheck="false" />
           </label>
-          <label class="title-field small-field">
-            <span>仓库名</span>
-            <input v-model="repositoryName" type="text" />
-          </label>
-          <div class="toolbar-actions">
-            <button class="ghost-button" type="button" @click="runParsePreview" :disabled="!canRunReview">
-              <FileCode2 :size="17" />
-              只解析
+
+          <div class="action-row">
+            <button class="secondary-button" :disabled="parsing" @click="handleParseDiff">
+              <Search :size="17" />
+              解析预览
             </button>
-            <button class="ghost-button" type="button" @click="runSelectedSample" :disabled="!selectedSampleId || loading">
-              <Sparkles :size="17" />
-              跑样例
-            </button>
-            <button class="primary-button" type="button" @click="runManualReview" :disabled="!canRunReview">
-              <Play :size="17" />
+            <button class="primary-button" :disabled="submitting" @click="handleSubmitReview">
+              <Loader2 v-if="submitting" class="spin" :size="18" />
+              <Play v-else :size="18" />
               提交审查
             </button>
           </div>
-        </div>
 
-        <div class="control-band">
-          <div>
-            <div class="section-title">
-              <SlidersHorizontal :size="18" />
-              Agent 开关
-            </div>
-            <div class="option-grid">
-              <label><input v-model="options.enableBugLogic" type="checkbox" /> Bug 逻辑</label>
-              <label><input v-model="options.enableSecurity" type="checkbox" /> 安全</label>
-              <label><input v-model="options.enableCodeQuality" type="checkbox" /> 质量</label>
-              <label><input v-model="options.enableTestCoverage" type="checkbox" /> 测试覆盖</label>
-              <label><input v-model="options.enableLlmReview" type="checkbox" /> LLM 复审</label>
-              <label><input v-model="options.failOnP0" type="checkbox" /> P0 阻断</label>
-            </div>
+          <div v-if="parsedPreview" class="diff-preview">
+            <span>文件 {{ parsedPreview.summary.filesChanged }}</span>
+            <span>新增 {{ parsedPreview.summary.additions }}</span>
+            <span>删除 {{ parsedPreview.summary.deletions }}</span>
           </div>
 
-          <div>
-            <div class="section-title">
-              <GitPullRequest :size="18" />
-              GitHub PR
+          <div class="source-tools">
+            <div>
+              <h3>样例库</h3>
+              <select v-model="selectedSampleId">
+                <option v-for="sample in samples" :key="sample.id" :value="sample.id">
+                  {{ sample.title }}
+                </option>
+              </select>
+              <button class="secondary-button" :disabled="submitting || !selectedSampleId" @click="handleSampleReview">
+                <Sparkles :size="17" />
+                运行样例
+              </button>
             </div>
-            <div class="github-row">
-              <input v-model="githubForm.repository" placeholder="owner/repo" />
-              <input v-model.number="githubForm.pullNumber" type="number" min="1" />
-              <button class="ghost-button" type="button" @click="runGithubReview">
-                拉取并审查
+
+            <div>
+              <h3>GitHub PR</h3>
+              <div class="github-grid">
+                <input v-model="githubForm.owner" placeholder="owner" />
+                <input v-model="githubForm.repo" placeholder="repo" />
+                <input v-model="githubForm.pullNumber" placeholder="PR #" />
+              </div>
+              <button class="secondary-button" :disabled="submitting" @click="handleGithubReview">
+                <GitPullRequest :size="17" />
+                审查 PR
               </button>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="diff-editor">
-          <div class="diff-editor-head">
-            <span>Git diff 输入</span>
-            <span>{{ diffLineCount }} 行</span>
+        <section class="panel result-panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Review Result</p>
+              <h2>{{ currentReview?.title ?? progress?.title ?? '等待审查任务' }}</h2>
+            </div>
+            <ShieldCheck :size="20" />
           </div>
-          <textarea
-            v-model="diffText"
-            spellcheck="false"
-            placeholder="把 git diff 粘贴到这里，或者从左侧选择一个样例"
-          />
-        </div>
 
-        <div v-if="selectedSample" class="sample-context">
-          <strong>{{ selectedSample.description }}</strong>
-          <span>预期标签：{{ selectedSample.expectedTags.join(' / ') }}</span>
-        </div>
+          <div class="result-hero">
+            <div class="risk-ring" :style="{ '--score': currentReview?.riskScore ?? progress?.riskScore ?? 0 }">
+              <span>{{ currentReview?.riskScore ?? progress?.riskScore ?? 0 }}</span>
+              <small>risk</small>
+            </div>
+            <div>
+              <strong>{{ recommendationLabel(currentReview?.recommendation ?? progress?.recommendation) }}</strong>
+              <span>{{ statusLabel(progress?.status ?? currentReview?.status) }}</span>
+            </div>
+          </div>
 
-        <div v-if="parsedPreview" class="parse-preview">
-          <span>解析预览</span>
-          <strong>{{ parsedPreview.summary.filesChanged }} 个文件</strong>
-          <strong>+{{ parsedPreview.summary.additions }}</strong>
-          <strong>-{{ parsedPreview.summary.deletions }}</strong>
+          <div class="progress-line">
+            <span>{{ completedAgentCount }}/{{ totalAgentCount }} agents</span>
+            <div class="bar-track">
+              <div class="bar-fill cyan" :style="{ width: `${progressPercent}%` }" />
+            </div>
+            <span>{{ progressPercent }}%</span>
+          </div>
+
+          <div class="result-tabs">
+            <button :class="{ active: activeResultTab === 'issues' }" @click="activeResultTab = 'issues'">问题</button>
+            <button :class="{ active: activeResultTab === 'agents' }" @click="activeResultTab = 'agents'">Trace</button>
+            <button :class="{ active: activeResultTab === 'markdown' }" @click="activeResultTab = 'markdown'">报告</button>
+          </div>
+
+          <div v-if="activeResultTab === 'issues'" class="issues-view">
+            <div class="severity-strip">
+              <span v-for="level in ['P0', 'P1', 'P2', 'P3']" :key="level" :class="`sev-${level}`">
+                {{ level }} {{ severityCounts[level] }}
+              </span>
+            </div>
+            <article v-for="issue in issueList" :key="issue.id" class="issue-card">
+              <div>
+                <span :class="`severity-badge sev-${issue.severity}`">{{ issue.severity }}</span>
+                <strong>{{ issue.title }}</strong>
+              </div>
+              <p>{{ issue.detail }}</p>
+              <small>{{ issue.filePath || 'unknown file' }}{{ issue.lineNumber ? `:${issue.lineNumber}` : '' }}</small>
+            </article>
+            <p v-if="issueList.length === 0" class="empty-text">暂无问题</p>
+          </div>
+
+          <div v-if="activeResultTab === 'agents'" class="trace-list">
+            <article v-for="trace in traceList" :key="trace.id" class="trace-item">
+              <div>
+                <Bot :size="17" />
+                <strong>{{ trace.agentType }}</strong>
+                <span :class="`status-pill ${trace.status?.toLowerCase()}`">{{ trace.status }}</span>
+              </div>
+              <p>{{ trace.outputSummary || trace.skipReason || trace.inputSummary }}</p>
+              <small>{{ trace.durationMs }}ms · {{ formatDate(trace.startedAt) }}</small>
+            </article>
+            <p v-if="traceList.length === 0" class="empty-text">暂无 Trace</p>
+          </div>
+
+          <div v-if="activeResultTab === 'markdown'" class="markdown-view">
+            <div class="action-row right">
+              <button class="secondary-button" :disabled="!markdownText" @click="downloadMarkdown">
+                <Download :size="17" />
+                Markdown
+              </button>
+              <button class="secondary-button" :disabled="!currentJob?.reviewId" @click="downloadSarif">
+                <FileText :size="17" />
+                SARIF
+              </button>
+            </div>
+            <pre>{{ markdownText || '报告生成后显示在这里' }}</pre>
+          </div>
+        </section>
+      </section>
+
+      <section v-if="activeView === 'policies'" class="policy-layout">
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Policy Center</p>
+              <h2>{{ selectedProjectName }} 策略</h2>
+            </div>
+            <Settings :size="20" />
+          </div>
+
+          <div class="form-grid">
+            <label>
+              <span>策略名称</span>
+              <input v-model="policyForm.name" />
+            </label>
+            <label>
+              <span>阻断级别</span>
+              <select v-model="policyForm.blockSeverity">
+                <option value="P0">P0</option>
+                <option value="P1">P1</option>
+                <option value="P2">P2</option>
+              </select>
+            </label>
+            <label>
+              <span>最大 Diff 字符数</span>
+              <input v-model="policyForm.maxDiffChars" type="number" min="1000" max="1000000" />
+            </label>
+          </div>
+
+          <div class="toggle-grid policy-toggles">
+            <label v-for="key in ['failOnP0', 'requireTestsForApiChanges', 'enableBugLogic', 'enableSecurity', 'enableCodeQuality', 'enableTestCoverage', 'enableLlmReview']" :key="key" class="toggle-line">
+              <input v-model="policyForm[key]" type="checkbox" />
+              <span>{{ key }}</span>
+            </label>
+          </div>
+
+          <button class="primary-button" :disabled="policySaving" @click="handleSavePolicy">
+            <Loader2 v-if="policySaving" class="spin" :size="18" />
+            <Save v-else :size="18" />
+            保存策略
+          </button>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Saved Policies</p>
+              <h2>策略记录</h2>
+            </div>
+            <Lock :size="20" />
+          </div>
+          <div class="simple-table">
+            <div v-for="policy in policies" :key="policy.id" class="table-row">
+              <span>{{ policy.projectKey }}</span>
+              <strong>{{ policy.name }}</strong>
+              <small>{{ policy.blockSeverity }} · {{ policy.maxDiffChars }}</small>
+            </div>
+            <p v-if="policies.length === 0" class="empty-text">暂无策略记录</p>
+          </div>
+        </section>
+      </section>
+
+      <section v-if="activeView === 'agents'" class="agent-grid">
+        <article v-for="agent in agents" :key="agent.type" class="agent-card">
+          <div class="agent-head">
+            <Bot :size="20" />
+            <span :class="`status-dot ${agent.status === 'READY' ? 'ready' : 'warn'}`" />
+          </div>
+          <h2>{{ agent.name }}</h2>
+          <p>{{ agent.description }}</p>
+          <strong>{{ agent.engine }}</strong>
+          <div class="signal-list">
+            <span v-for="signal in agent.signals" :key="signal">{{ signal }}</span>
+          </div>
+          <small>{{ agent.enterpriseValue }}</small>
+        </article>
+      </section>
+
+      <section v-if="activeView === 'audit'" class="panel">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">Audit Trail</p>
+            <h2>审计日志</h2>
+          </div>
+          <History :size="20" />
+        </div>
+        <div class="audit-table">
+          <div v-for="log in auditLogs" :key="log.id" class="audit-row">
+            <Clock3 :size="16" />
+            <span>{{ formatDate(log.createdAt) }}</span>
+            <strong>{{ log.action }}</strong>
+            <small>{{ log.actorUsername }} · {{ log.summary }}</small>
+          </div>
+          <p v-if="auditLogs.length === 0" class="empty-text">暂无审计日志</p>
         </div>
       </section>
 
-      <section class="review-area">
-        <div class="result-summary">
-          <div>
-            <span class="summary-label">任务状态</span>
-            <strong>{{ statusLabel(progress?.status ?? currentReview?.status) }}</strong>
+      <section v-if="activeView === 'assets'" class="assets-layout">
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Projects</p>
+              <h2>项目资产</h2>
+            </div>
+            <FolderKanban :size="20" />
           </div>
-          <div>
-            <span class="summary-label">合并建议</span>
-            <strong :class="['recommendation', currentReview?.recommendation?.toLowerCase()]">
-              {{ recommendationLabel(currentReview?.recommendation) }}
-            </strong>
+          <div class="form-grid">
+            <input v-model="newProject.projectKey" placeholder="project-key" />
+            <input v-model="newProject.name" placeholder="项目名称" />
+            <input v-model="newProject.description" placeholder="项目描述" />
           </div>
-          <div>
-            <span class="summary-label">风险分</span>
-            <strong>{{ currentReview?.riskScore ?? progress?.riskScore ?? 0 }}</strong>
-          </div>
-          <div>
-            <span class="summary-label">文件</span>
-            <strong>{{ currentReview?.diffSummary?.filesChanged ?? 0 }}</strong>
-          </div>
-        </div>
-
-        <div class="progress-box">
-          <div class="progress-head">
-            <span>Agent 进度</span>
-            <strong>{{ progressPercent }}%</strong>
-          </div>
-          <div class="progress-track">
-            <span :style="{ width: `${progressPercent}%` }"></span>
-          </div>
-        </div>
-
-        <div class="severity-strip">
-          <span class="severity p0">P0 {{ issueCountBySeverity.P0 }}</span>
-          <span class="severity p1">P1 {{ issueCountBySeverity.P1 }}</span>
-          <span class="severity p2">P2 {{ issueCountBySeverity.P2 }}</span>
-          <span class="severity p3">P3 {{ issueCountBySeverity.P3 }}</span>
-        </div>
-
-        <div class="tabs">
-          <button type="button" :class="{ active: activeTab === 'issues' }" @click="activeTab = 'issues'">
-            <ShieldCheck :size="16" />
-            问题
+          <button class="primary-button" @click="handleCreateProject">
+            <FolderKanban :size="18" />
+            创建项目
           </button>
-          <button type="button" :class="{ active: activeTab === 'agents' }" @click="activeTab = 'agents'">
-            <Activity :size="16" />
-            Agent
-          </button>
-          <button type="button" :class="{ active: activeTab === 'markdown' }" @click="activeTab = 'markdown'">
-            <FileCode2 :size="16" />
-            报告
-          </button>
-        </div>
+        </section>
 
-        <div v-if="activeTab === 'issues'" class="result-panel">
-          <button
-            v-if="currentReview"
-            class="ghost-button export-button"
-            type="button"
-            @click="downloadSarif"
+        <section class="project-list">
+          <article
+            v-for="project in projectChoices"
+            :key="project.projectKey"
+            class="project-card"
+            :class="{ active: selectedProjectKey === project.projectKey }"
+            @click="selectedProjectKey = project.projectKey"
           >
-            <Download :size="16" />
-            导出 SARIF
-          </button>
-          <article v-for="issue in sortedIssues" :key="issue.id" class="issue-card">
-            <div class="issue-head">
-              <span :class="['severity-dot', issue.severity.toLowerCase()]">{{ issue.severity }}</span>
-              <strong>{{ issue.title }}</strong>
-            </div>
-            <p>{{ issue.detail }}</p>
-            <dl>
-              <dt>位置</dt>
-              <dd>{{ issue.filePath }}{{ issue.lineNumber ? `:${issue.lineNumber}` : '' }}</dd>
-              <dt>Agent</dt>
-              <dd>{{ agentLabel(issue.agentType) }} / {{ issue.tag }}</dd>
-              <dt>建议</dt>
-              <dd>{{ issue.suggestion }}</dd>
-            </dl>
-            <pre v-if="issue.evidence">{{ issue.evidence }}</pre>
-          </article>
-          <p v-if="!currentReview" class="empty-state">提交审查后，这里会显示最终问题列表。</p>
-          <p v-else-if="sortedIssues.length === 0" class="empty-state">这次审查没有发现明确问题。</p>
-        </div>
-
-        <div v-if="activeTab === 'agents'" class="result-panel">
-          <article v-for="trace in progress?.traces ?? currentReview?.traces ?? []" :key="trace.id" class="trace-row">
-            <div class="trace-main">
-              <strong>{{ agentLabel(trace.agentType) }}</strong>
-              <span>{{ trace.outputSummary || trace.skipReason || trace.inputSummary }}</span>
-              <small v-if="trace.provider">{{ trace.provider }} / {{ trace.modelName }}</small>
-            </div>
-            <div class="trace-meta">
-              <span>{{ statusLabel(trace.status) }}</span>
-              <span>{{ trace.durationMs }} ms</span>
+            <FolderKanban :size="19" />
+            <div>
+              <strong>{{ project.name }}</strong>
+              <span>{{ project.projectKey }}</span>
             </div>
           </article>
-          <p v-if="!progress && !currentReview" class="empty-state">审查开始后，这里会显示每个 Agent 的执行轨迹。</p>
-        </div>
-
-        <div v-if="activeTab === 'markdown'" class="result-panel">
-          <pre class="markdown-report">{{ markdownText || '审查完成后，这里会显示 Markdown 报告。' }}</pre>
-        </div>
+        </section>
       </section>
-    </section>
-  </main>
+    </main>
+  </div>
 </template>

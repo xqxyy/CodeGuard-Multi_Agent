@@ -1,5 +1,4 @@
-// 这一层专门封装后端请求。
-// 页面组件不用关心 fetch、Authorization、错误解析这些细节。
+// 统一封装后端请求：组件只调用业务函数，不直接处理 fetch、Token 和错误解析。
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const TOKEN_KEY = 'codeguard_token';
 const USER_KEY = 'codeguard_user';
@@ -18,7 +17,8 @@ export function storeAuth(loginResponse) {
   localStorage.setItem(USER_KEY, JSON.stringify({
     username: loginResponse.username,
     displayName: loginResponse.displayName,
-    role: loginResponse.role
+    role: loginResponse.role,
+    organizationKey: loginResponse.organizationKey
   }));
 }
 
@@ -46,13 +46,27 @@ async function request(path, options = {}) {
     : await response.text();
 
   if (!response.ok) {
+    const requestId = response.headers.get('X-Request-Id') ?? body?.requestId;
     const message = typeof body === 'object' && body !== null
       ? body.message ?? body.error ?? '请求失败'
       : body || '请求失败';
-    throw new Error(message);
+
+    if (response.status === 401 || response.status === 403) {
+      clearAuth();
+      window.dispatchEvent(new CustomEvent('codeguard-auth-expired', {
+        detail: { message: '登录状态已失效，请重新登录' }
+      }));
+    }
+
+    throw new Error(requestId ? `${message}（请求ID：${requestId}）` : message);
   }
 
   return body;
+}
+
+function createIdempotencyKey(prefix) {
+  const randomPart = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  return `${prefix}-${randomPart}`;
 }
 
 export function login(username, password) {
@@ -64,6 +78,37 @@ export function login(username, password) {
 
 export function health() {
   return request('/health');
+}
+
+export function getCurrentOrganization() {
+  return request('/organizations/current');
+}
+
+export function getDashboard() {
+  return request('/dashboard');
+}
+
+export function listAgents() {
+  return request('/agents');
+}
+
+export function listAuditLogs() {
+  return request('/audit-logs');
+}
+
+export function listPolicies() {
+  return request('/policies');
+}
+
+export function getPolicy(projectKey) {
+  return request(`/projects/${projectKey}/policy`);
+}
+
+export function savePolicy(projectKey, policy) {
+  return request(`/projects/${projectKey}/policy`, {
+    method: 'POST',
+    body: JSON.stringify(policy)
+  });
 }
 
 export function listProjects() {
@@ -88,9 +133,10 @@ export function parseDiff(title, diffText) {
   });
 }
 
-export function submitReview(payload) {
+export function submitReview(payload, idempotencyKey = createIdempotencyKey('manual-review')) {
   return request('/reviews', {
     method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify(payload)
   });
 }
@@ -102,15 +148,17 @@ export function reviewDiffSync(title, diffText) {
   });
 }
 
-export function reviewSample(sampleId) {
+export function reviewSample(sampleId, idempotencyKey = createIdempotencyKey(`sample-${sampleId}`)) {
   return request(`/samples/${sampleId}/reviews`, {
-    method: 'POST'
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey }
   });
 }
 
-export function submitGithubPr(payload) {
+export function submitGithubPr(payload, idempotencyKey = createIdempotencyKey('github-pr')) {
   return request('/integrations/github/pr-review', {
     method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify(payload)
   });
 }

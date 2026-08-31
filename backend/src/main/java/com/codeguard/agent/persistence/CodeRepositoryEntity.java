@@ -26,6 +26,9 @@ public class CodeRepositoryEntity {
     @JoinColumn(name = "project_id", nullable = false)
     private ProjectEntity project;
 
+    @Column(nullable = false, length = 80)
+    private String organizationKey;
+
     @Column(nullable = false, length = 180)
     private String repositoryName;
 
@@ -54,6 +57,7 @@ public class CodeRepositoryEntity {
         CodeRepositoryEntity entity = new CodeRepositoryEntity();
         entity.id = UUID.randomUUID();
         entity.project = project;
+        entity.organizationKey = project.getOrganizationKey();
         entity.repositoryName = repositoryName;
         entity.provider = provider == null || provider.isBlank() ? "manual" : provider.strip();
         entity.remoteUrl = remoteUrl;
@@ -68,6 +72,10 @@ public class CodeRepositoryEntity {
 
     public ProjectEntity getProject() {
         return project;
+    }
+
+    public String getOrganizationKey() {
+        return organizationKey;
     }
 
     public String getRepositoryName() {
