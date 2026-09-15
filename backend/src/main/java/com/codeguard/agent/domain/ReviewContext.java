@@ -6,9 +6,20 @@ public record ReviewContext(
         String rawDiff,
         ParsedDiff parsedDiff,
         RouterDecision routerDecision,
-        ReviewContextSnapshot contextSnapshot
+        ReviewContextSnapshot contextSnapshot,
+        String sourceUrl
 ) {
     public ReviewContext(String title, String rawDiff, ParsedDiff parsedDiff, RouterDecision routerDecision) {
-        this(title, rawDiff, parsedDiff, routerDecision, ReviewContextSnapshot.empty());
+        this(title, rawDiff, parsedDiff, routerDecision, ReviewContextSnapshot.empty(), null);
+    }
+
+    public ReviewContext(
+            String title,
+            String rawDiff,
+            ParsedDiff parsedDiff,
+            RouterDecision routerDecision,
+            ReviewContextSnapshot contextSnapshot
+    ) {
+        this(title, rawDiff, parsedDiff, routerDecision, contextSnapshot, null);
     }
 }

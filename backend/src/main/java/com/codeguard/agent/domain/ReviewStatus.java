@@ -10,6 +10,7 @@ public enum ReviewStatus {
     QUEUED,
     RUNNING,
     COMPLETED,
+    PARTIAL,
     FAILED,
     CANCELED
 }

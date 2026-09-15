@@ -61,6 +61,7 @@ codeguard:
     max-active-reviews-per-organization: 20
     running-timeout-minutes: 30
     queued-dispatch-batch-size: 5
+    agent-execution-timeout-seconds: 45
     async-poll-interval-ms: 1500
 
   llm:
@@ -72,3 +73,4 @@ codeguard:
 
   github:
     token: ${GITHUB_TOKEN:}
+    webhook-secret: ${GITHUB_WEBHOOK_SECRET:}

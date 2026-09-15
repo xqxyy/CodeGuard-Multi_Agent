@@ -25,12 +25,21 @@ import org.springframework.stereotype.Service;
 public class ReviewContextEnrichmentService {
 
     private final EnterpriseKnowledgeBaseService knowledgeBaseService;
+    private final GithubRepositoryContextService githubRepositoryContextService;
 
-    public ReviewContextEnrichmentService(EnterpriseKnowledgeBaseService knowledgeBaseService) {
+    public ReviewContextEnrichmentService(
+            EnterpriseKnowledgeBaseService knowledgeBaseService,
+            GithubRepositoryContextService githubRepositoryContextService
+    ) {
         this.knowledgeBaseService = knowledgeBaseService;
+        this.githubRepositoryContextService = githubRepositoryContextService;
     }
 
     public ReviewContextSnapshot enrich(ParsedDiff parsedDiff, String rawDiff) {
+        return enrich(parsedDiff, rawDiff, null);
+    }
+
+    public ReviewContextSnapshot enrich(ParsedDiff parsedDiff, String rawDiff, String sourceUrl) {
         List<ReviewToolObservation> observations = new ArrayList<>();
         List<ReviewFinding> findings = new ArrayList<>();
 
@@ -77,6 +86,8 @@ public class ReviewContextEnrichmentService {
             }
         }
 
+        observations.addAll(githubRepositoryContextService.collect(sourceUrl, parsedDiff));
+
         List<ReviewKnowledgeSnippet> snippets = knowledgeBaseService.retrieve(parsedDiff, rawDiff);
         String summary = "productionJava="
                 + hasProductionJava
@@ -85,7 +96,9 @@ public class ReviewContextEnrichmentService {
                 + ", highRiskPaths="
                 + highRiskPathCount
                 + ", knowledgeHits="
-                + snippets.size();
+                + snippets.size()
+                + ", toolObservations="
+                + observations.size();
 
         return new ReviewContextSnapshot(summary, observations, snippets, findings);
     }

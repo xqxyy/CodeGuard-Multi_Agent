@@ -11,6 +11,7 @@ import com.codeguard.agent.api.ReviewListItem;
 import com.codeguard.agent.api.ReviewProgressResponse;
 import com.codeguard.agent.api.ReviewRequest;
 import com.codeguard.agent.api.ReviewResponse;
+import com.codeguard.agent.config.CodeGuardProperties;
 import com.codeguard.agent.diff.GitDiffParser;
 import com.codeguard.agent.domain.AgentStatus;
 import com.codeguard.agent.domain.AgentTraceRecord;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -85,7 +87,8 @@ public class ReviewWorkflowService {
     private final ReviewContextEnrichmentService contextEnrichmentService;
     private final CurrentUserService currentUserService;
     private final AuditLogService auditLogService;
-    private final Executor reviewTaskExecutor;
+    private final Executor reviewAgentExecutor;
+    private final CodeGuardProperties properties;
     private final Map<AgentType, ReviewAgent> agents;
 
     public ReviewWorkflowService(
@@ -106,7 +109,8 @@ public class ReviewWorkflowService {
             ReviewContextEnrichmentService contextEnrichmentService,
             CurrentUserService currentUserService,
             AuditLogService auditLogService,
-            @Qualifier("reviewTaskExecutor") Executor reviewTaskExecutor
+            @Qualifier("reviewAgentExecutor") Executor reviewAgentExecutor,
+            CodeGuardProperties properties
     ) {
         this.diffParser = diffParser;
         this.routerAgent = routerAgent;
@@ -124,7 +128,8 @@ public class ReviewWorkflowService {
         this.contextEnrichmentService = contextEnrichmentService;
         this.currentUserService = currentUserService;
         this.auditLogService = auditLogService;
-        this.reviewTaskExecutor = reviewTaskExecutor;
+        this.reviewAgentExecutor = reviewAgentExecutor;
+        this.properties = properties;
         this.agents = agents.stream()
                 .collect(Collectors.toMap(
                         ReviewAgent::type,
@@ -222,18 +227,24 @@ public class ReviewWorkflowService {
 
             ParsedDiff parsedDiff = diffParser.parse(review.getDiffText());
             RouterDecision routerDecision = routerAgent.route(parsedDiff, review.getDiffText());
-            ReviewContextSnapshot contextSnapshot = contextEnrichmentService.enrich(parsedDiff, review.getDiffText());
+            ReviewContextSnapshot contextSnapshot = contextEnrichmentService.enrich(
+                    parsedDiff,
+                    review.getDiffText(),
+                    review.getSourceUrl()
+            );
             ReviewContext context = new ReviewContext(
                     review.getTitle(),
                     review.getDiffText(),
                     parsedDiff,
                     routerDecision,
-                    contextSnapshot
+                    contextSnapshot,
+                    review.getSourceUrl()
             );
 
             saveTrace(reviewId, routerTrace(routerDecision, parsedDiff));
 
-            List<ReviewFinding> ruleFindings = runRuleAgents(review, context, routerDecision);
+            RuleAgentRun ruleRun = runRuleAgents(review, context, routerDecision);
+            List<ReviewFinding> ruleFindings = ruleRun.findings();
             LlmReviewAgent.LlmReviewRun llmRun = runLlmAgent(review, context, ruleFindings);
 
             List<ReviewFinding> allFindings = new ArrayList<>();
@@ -244,15 +255,24 @@ public class ReviewWorkflowService {
                     .sorted(Comparator.comparing(ReviewFinding::severity).thenComparing(ReviewFinding::tag))
                     .toList();
 
-            SummaryRun summaryRun = runSummaryAgent(sortedFindings);
+            SummaryRun summaryRun = runSummaryAgent(sortedFindings, ruleRun.hasRequiredFailure());
             saveTrace(reviewId, summaryRun.trace());
 
             ReviewEntity completedReview = findReview(reviewId);
-            completedReview.complete(
-                    summaryRun.summary().markdown(),
-                    summaryRun.summary().recommendation(),
-                    summaryRun.summary().riskScore()
-            );
+            if (ruleRun.hasRequiredFailure()) {
+                completedReview.completePartial(
+                        summaryRun.summary().markdown(),
+                        summaryRun.summary().recommendation(),
+                        summaryRun.summary().riskScore(),
+                        "必要审查 Agent 执行失败：" + ruleRun.failedAgents()
+                );
+            } else {
+                completedReview.complete(
+                        summaryRun.summary().markdown(),
+                        summaryRun.summary().recommendation(),
+                        summaryRun.summary().riskScore()
+                );
+            }
             reviewRepository.save(completedReview);
 
             List<ReviewIssueEntity> issueEntities = sortedFindings.stream()
@@ -349,12 +369,12 @@ public class ReviewWorkflowService {
         return review.getMarkdown();
     }
 
-    private List<ReviewFinding> runRuleAgents(
+    private RuleAgentRun runRuleAgents(
             ReviewEntity review,
             ReviewContext context,
             RouterDecision routerDecision
     ) {
-        List<CompletableFuture<AgentRun>> futures = new ArrayList<>();
+        List<PendingAgent> futures = new ArrayList<>();
         List<AgentTraceRecord> skippedTraces = new ArrayList<>();
 
         for (AgentType agentType : RULE_AGENT_ORDER) {
@@ -363,20 +383,53 @@ public class ReviewWorkflowService {
             } else if (!routerDecision.shouldRun(agentType)) {
                 skippedTraces.add(skippedTrace(agentType, routerDecision.reasonFor(agentType)));
             } else {
-                futures.add(CompletableFuture.supplyAsync(() -> runAgent(agentType, context), reviewTaskExecutor));
+                futures.add(new PendingAgent(
+                        agentType,
+                        CompletableFuture.supplyAsync(() -> runAgent(agentType, context), reviewAgentExecutor)
+                ));
             }
         }
 
         skippedTraces.forEach(trace -> saveTrace(review.getId(), trace));
 
         List<ReviewFinding> findings = new ArrayList<>();
-        for (CompletableFuture<AgentRun> future : futures) {
-            AgentRun run = future.join();
+        List<AgentType> failedAgents = new ArrayList<>();
+        for (PendingAgent pending : futures) {
+            AgentRun run;
+            try {
+                run = pending.future().get(properties.review().agentExecutionTimeoutSeconds(), TimeUnit.SECONDS);
+            } catch (Exception exception) {
+                pending.future().cancel(true);
+                Instant now = Instant.now();
+                run = new AgentRun(
+                        List.of(),
+                        new AgentTraceRecord(
+                                pending.agentType(),
+                                AgentStatus.FAILED,
+                                "Agent execution exceeded its deadline",
+                                "Agent execution did not complete",
+                                null,
+                                properties.review().agentExecutionTimeoutSeconds() * 1000L,
+                                now,
+                                now,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                exception.getClass().getSimpleName()
+                        )
+                );
+            }
             findings.addAll(run.findings());
             saveTrace(review.getId(), run.trace());
+            if (run.trace().status() == AgentStatus.FAILED) {
+                failedAgents.add(run.trace().agentType());
+            }
         }
 
-        return findings;
+        return new RuleAgentRun(findings, failedAgents);
     }
 
     private LlmReviewAgent.LlmReviewRun runLlmAgent(
@@ -395,9 +448,9 @@ public class ReviewWorkflowService {
         return llmRun;
     }
 
-    private SummaryRun runSummaryAgent(List<ReviewFinding> findings) {
+    private SummaryRun runSummaryAgent(List<ReviewFinding> findings, boolean incomplete) {
         Instant startedAt = Instant.now();
-        SummaryAgent.SummaryResult summary = summaryAgent.summarize(findings);
+        SummaryAgent.SummaryResult summary = summaryAgent.summarize(findings, incomplete);
         Instant endedAt = Instant.now();
 
         AgentTraceRecord trace = new AgentTraceRecord(
@@ -559,6 +612,19 @@ public class ReviewWorkflowService {
     }
 
     private record AgentRun(List<ReviewFinding> findings, AgentTraceRecord trace) {}
+
+    private record PendingAgent(AgentType agentType, CompletableFuture<AgentRun> future) {}
+
+    private record RuleAgentRun(List<ReviewFinding> findings, List<AgentType> failedAgents) {
+        private RuleAgentRun {
+            findings = List.copyOf(findings);
+            failedAgents = List.copyOf(failedAgents);
+        }
+
+        boolean hasRequiredFailure() {
+            return !failedAgents.isEmpty();
+        }
+    }
 
     private record SummaryRun(SummaryAgent.SummaryResult summary, AgentTraceRecord trace) {}
 }

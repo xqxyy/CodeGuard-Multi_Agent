@@ -29,23 +29,27 @@ public class GithubPrService {
     }
 
     public ReviewRequest toReviewRequest(GithubPrReviewRequest request) {
-        String repository = request.repository().strip();
+        return toReviewRequest(request.repository(), request.pullNumber(), request.projectKey(), request.options());
+    }
+
+    public ReviewRequest toReviewRequest(String repositoryValue, int pullNumber, String projectKey, com.codeguard.agent.api.ReviewOptions options) {
+        String repository = repositoryValue.strip();
         if (!repository.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")) {
             throw new IllegalArgumentException("repository must look like owner/repo");
         }
 
-        String prUrl = "https://github.com/" + repository + "/pull/" + request.pullNumber();
-        String apiUrl = "https://api.github.com/repos/" + repository + "/pulls/" + request.pullNumber();
+        String prUrl = "https://github.com/" + repository + "/pull/" + pullNumber;
+        String apiUrl = "https://api.github.com/repos/" + repository + "/pulls/" + pullNumber;
         String diffText = fetchDiff(apiUrl);
 
         return new ReviewRequest(
-                "GitHub PR #" + request.pullNumber() + " - " + repository,
+                "GitHub PR #" + pullNumber + " - " + repository,
                 diffText,
-                request.projectKey() == null || request.projectKey().isBlank() ? "github-demo" : request.projectKey(),
+                projectKey == null || projectKey.isBlank() ? "github-demo" : projectKey,
                 repository,
                 ReviewSourceType.GITHUB_PR.name(),
                 prUrl,
-                request.options()
+                options
         );
     }
 

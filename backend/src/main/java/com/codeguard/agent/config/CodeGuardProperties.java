@@ -21,7 +21,7 @@ public record CodeGuardProperties(
      */
     public CodeGuardProperties {
         if (review == null) {
-            review = new Review(200_000, 30, 20, 30, 5);
+            review = new Review(200_000, 30, 20, 30, 5, 45);
         }
 
         if (llm == null) {
@@ -46,7 +46,8 @@ public record CodeGuardProperties(
             int submitRateLimitPerMinute,
             int maxActiveReviewsPerOrganization,
             int runningTimeoutMinutes,
-            int queuedDispatchBatchSize
+            int queuedDispatchBatchSize,
+            int agentExecutionTimeoutSeconds
     ) {
 
         public Review(
@@ -54,7 +55,7 @@ public record CodeGuardProperties(
                 int submitRateLimitPerMinute,
                 int maxActiveReviewsPerOrganization
         ) {
-            this(maxDiffChars, submitRateLimitPerMinute, maxActiveReviewsPerOrganization, 30, 5);
+            this(maxDiffChars, submitRateLimitPerMinute, maxActiveReviewsPerOrganization, 30, 5, 45);
         }
 
         /**
@@ -75,6 +76,9 @@ public record CodeGuardProperties(
             }
             if (queuedDispatchBatchSize <= 0) {
                 queuedDispatchBatchSize = 5;
+            }
+            if (agentExecutionTimeoutSeconds <= 0) {
+                agentExecutionTimeoutSeconds = 45;
             }
         }
     }

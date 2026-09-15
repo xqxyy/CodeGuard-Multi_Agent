@@ -21,6 +21,10 @@ public class SummaryAgent {
 
     /** 定义汇总方法。输入是问题列表，输出是汇总结果 */
     public SummaryResult summarize(List<ReviewFinding> findings) {
+        return summarize(findings, false);
+    }
+
+    public SummaryResult summarize(List<ReviewFinding> findings, boolean incomplete) {
         /** 遍历所有问题，把每条问题的严重级别分数加起来 */
         int riskScore = Math.min(
                 100,
@@ -30,8 +34,8 @@ public class SummaryAgent {
         );
 
         /** 根据问题严重程度生成合并建议 */
-        MergeRecommendation recommendation = recommendation(findings);
-        String markdown = markdown(findings, recommendation, riskScore);
+        MergeRecommendation recommendation = incomplete ? MergeRecommendation.BLOCK : recommendation(findings);
+        String markdown = markdown(findings, recommendation, riskScore, incomplete);
 
         return new SummaryResult(markdown, recommendation, riskScore);
     }
@@ -70,7 +74,8 @@ public class SummaryAgent {
     private String markdown(
             List<ReviewFinding> findings,
             MergeRecommendation recommendation,
-            int riskScore
+            int riskScore,
+            boolean incomplete
     ) {
         StringBuilder builder = new StringBuilder();
 
@@ -78,6 +83,9 @@ public class SummaryAgent {
         builder.append("## 合并建议\n\n");
         builder.append("- 建议：").append(recommendation).append("\n");
         builder.append("- 风险分：").append(riskScore).append("/100\n\n");
+        if (incomplete) {
+            builder.append("> 本次必要检查未完整执行，禁止依据本报告合并。请排查失败 Agent 后重试。\n\n");
+        }
 
         Map<Severity, Long> severityCounts = findings.stream()
                 .collect(Collectors.groupingBy(ReviewFinding::severity, Collectors.counting()));

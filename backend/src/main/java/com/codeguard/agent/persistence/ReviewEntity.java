@@ -223,6 +223,15 @@ public class ReviewEntity {
         this.updatedAt = Instant.now();
     }
 
+    public void completePartial(String markdown, MergeRecommendation recommendation, int riskScore, String message) {
+        this.status = ReviewStatus.PARTIAL;
+        this.markdown = markdown;
+        this.recommendation = recommendation;
+        this.riskScore = riskScore;
+        this.errorMessage = message;
+        this.updatedAt = Instant.now();
+    }
+
     public void fail(String message) {
         this.status = ReviewStatus.FAILED;
         this.errorMessage = message;

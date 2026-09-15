@@ -30,6 +30,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/integrations/github/webhook").permitAll()
                         .requestMatchers("/api/health", "/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers(
                                 "/swagger-ui/**",

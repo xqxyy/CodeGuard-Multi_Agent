@@ -77,11 +77,12 @@ public class PolicyService {
 
         return new ReviewOptions(
                 requestOptions.enableBugLogic() == null ? policy.isEnableBugLogic() : requestOptions.enableBugLogic(),
-                requestOptions.enableSecurity() == null ? policy.isEnableSecurity() : requestOptions.enableSecurity(),
+                // 项目策略是组织级约束，单次请求不能把已启用的安全审查关闭。
+                policy.isEnableSecurity() || Boolean.TRUE.equals(requestOptions.enableSecurity()),
                 requestOptions.enableCodeQuality() == null ? policy.isEnableCodeQuality() : requestOptions.enableCodeQuality(),
                 requestOptions.enableTestCoverage() == null ? policy.isEnableTestCoverage() : requestOptions.enableTestCoverage(),
                 requestOptions.enableLlmReview() == null ? policy.isEnableLlmReview() : requestOptions.enableLlmReview(),
-                requestOptions.failOnP0() == null ? policy.isFailOnP0() : requestOptions.failOnP0()
+                policy.isFailOnP0() || Boolean.TRUE.equals(requestOptions.failOnP0())
         );
     }
 

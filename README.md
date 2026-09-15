@@ -24,6 +24,7 @@ flowchart TB
     static["Enterprise Static Analysis Agent<br/>企业静态分析"]
     knowledge["Knowledge Base Agent<br/>内置 RAG 规范检索"]
     llm["LLM Review Agent<br/>LangChain4j + OpenAI 兼容模型"]
+    tools["受控 Tool Runtime<br/>只读文件 / 固定 SHA / 预算"]
     summary["SummaryAgent<br/>风险分 / 合并建议 / Markdown"]
     github["GitHub API<br/>PR Diff 拉取"]
     postgres["PostgreSQL<br/>Review / Issue / Trace / Audit / Policy"]
@@ -46,6 +47,7 @@ flowchart TB
     static --> summary
     knowledge --> summary
     llm --> summary
+    llm -. "Function Calling" .-> tools --> github
     summary --> postgres
     workflow --> postgres
     workflow --> redis
@@ -72,6 +74,7 @@ sequenceDiagram
     participant Static as 静态分析 Agent
     participant KB as Knowledge Base Agent
     participant LLM as LLM Review Agent
+    participant Tool as Tool Runtime / GitHub API
     participant Summary as SummaryAgent
 
     User->>FE: 登录并提交 Diff / 样例 / GitHub PR
@@ -113,6 +116,11 @@ sequenceDiagram
 
     opt 配置了 LLM API Key
         WF->>LLM: 发送 Diff、规则结果、上下文工具观察、知识库片段
+        opt 模型需要更多文件上下文
+            LLM->>Tool: Function Calling: github_read_changed_file(path)
+            Tool->>Tool: 校验路径属于本次 Diff、固定 head SHA、内容/轮次预算
+            Tool-->>LLM: 受限文件上下文，写入 Agent Trace
+        end
         LLM-->>WF: 额外 ReviewFinding + LLM Trace
     end
 
@@ -126,7 +134,7 @@ sequenceDiagram
 ## 核心功能
 
 - 多 Agent 审查链路：按职责拆分路由、Bug、安全、代码质量、测试覆盖和 LLM 综合审查。
-- 仓库上下文工具：对变更文件、风险路径、测试配套和关键边界做上下文增强，供后续 Agent 使用。
+- 仓库上下文工具：对变更文件、风险路径、测试配套和关键边界做上下文增强；对于 GitHub PR，LLM 可通过 LangChain4j Function Calling 按需请求 `github_read_changed_file`。服务端只允许读取本次 Diff 中的 Java 文件，并固定到本次 PR 的 `head SHA`，每份内容截断为 3,000 字符、最多两轮调用，工具调用过程进入 Agent Trace 审计。
 - 企业知识库检索：内置安全、SQL、文件上传、依赖治理、审计和异步任务可靠性规范，后续可替换为 Milvus 或 pgvector。
 - 企业静态分析：内置供应链、线程池治理、危险 JVM 退出和安全 TODO 规则，并预留 Semgrep、SpotBugs、依赖扫描器接入边界。
 - 企业工作台：支持概览看板、审查任务、项目资产、策略中心、Agent 目录和审计日志。
@@ -188,6 +196,21 @@ multi_agent_java/
 公开仓库不包含任何真实 API Key。未配置 Key 时，LLM Agent 会自动跳过，规则 Agent 仍可正常运行。
 
 当前知识库默认使用内置策略文档，保证 Docker 演示环境无需额外部署向量数据库。生产环境如果需要接入 RAG，可以把 `EnterpriseKnowledgeBaseService` 的检索实现替换为 Milvus、pgvector 或企业知识库服务，接口返回仍保持 `ReviewKnowledgeSnippet`。
+
+GitHub PR 可手动提交，也支持 GitHub Webhook 自动触发。自动触发时需要配置只读仓库访问 Token 和 Webhook Secret：
+
+```powershell
+$env:GITHUB_TOKEN="github-token"
+$env:GITHUB_WEBHOOK_SECRET="random-webhook-secret"
+```
+
+在 GitHub App 或仓库 Webhook 中把 `pull_request` 的 `opened`、`reopened`、`synchronize` 事件发送到：
+
+```text
+POST /api/integrations/github/webhook
+```
+
+服务会校验 `X-Hub-Signature-256`，用 `X-GitHub-Delivery` 去重，并异步创建审查任务。当前集成只读取 PR 和受控仓库上下文，不会自动写入 GitHub 评论或修改代码；正式多租户接入应使用 GitHub App Installation Token 和仓库到组织的授权映射，不能把 PAT 当作最终方案。
 
 本地使用真实模型时，可以通过环境变量配置：
 

@@ -392,7 +392,7 @@ async function refreshProgress(reviewId = currentJob.value?.reviewId) {
   if (!reviewId) return;
 
   progress.value = await getProgress(reviewId);
-  if (['COMPLETED', 'FAILED', 'CANCELED'].includes(progress.value.status)) {
+  if (['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELED'].includes(progress.value.status)) {
     stopPolling();
     await loadReviewDetail(reviewId);
     await Promise.allSettled([
